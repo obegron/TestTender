@@ -4,7 +4,7 @@ set -euo pipefail
 BACKENDS_RAW="${ENDURANCE_BACKENDS:-proot,k8s}"
 TASKS_RAW="${ENDURANCE_TASKS:-:testcontainers-postgresql:test,:testcontainers-ldap:test,testcontainers-kafka:test,:testcontainers-mockserver:test,testcontainers-mssql:test}"
 ITERATIONS="${ENDURANCE_ITERATIONS:-100}"
-REPORT_PATH="${ENDURANCE_REPORT:-/tmp/sidewhale-endurance-report.tsv}"
+REPORT_PATH="${ENDURANCE_REPORT:-/tmp/testtender-endurance-report.tsv}"
 K8S_RESET="${ENDURANCE_K8S_RESET:-false}"
 K8S_RESET_MODE="${ENDURANCE_K8S_RESET_MODE:-namespace}"
 K8S_BUILD_IMAGE="${ENDURANCE_K8S_BUILD_IMAGE:-true}"
@@ -27,7 +27,7 @@ report_dir="$(dirname "$REPORT_PATH")"
 mkdir -p "$report_dir"
 
 {
-  echo "# sidewhale endurance report"
+  echo "# testtender endurance report"
   echo "# generated_at_utc	$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "# backends	$BACKENDS_RAW"
   echo "# tasks	$TASKS_RAW"
@@ -35,7 +35,7 @@ mkdir -p "$report_dir"
   echo "timestamp_utc	backend	task	iteration	status	duration_s"
 } >"$REPORT_PATH"
 
-tmp_log="$(mktemp -t sidewhale-endurance.XXXXXX.log)"
+tmp_log="$(mktemp -t testtender-endurance.XXXXXX.log)"
 trap 'rm -f "$tmp_log"' EXIT
 
 run_one() {
@@ -51,8 +51,8 @@ run_one() {
 
   if [ "$backend" = "k8s" ]; then
     make integration-test-upstream-k8s \
-      K8S_CONTEXT="${K8S_CONTEXT:-k3d-sidewhale-k8s}" \
-      K8S_NAMESPACE="${K8S_NAMESPACE:-sidewhale-system}" \
+      K8S_CONTEXT="${K8S_CONTEXT:-k3d-testtender-k8s}" \
+      K8S_NAMESPACE="${K8S_NAMESPACE:-testtender-system}" \
       K8S_UPSTREAM_TASK="$task" \
       K8S_UPSTREAM_TEST_ARGS=""
     return
@@ -89,10 +89,10 @@ for backend in "${BACKENDS[@]}"; do
 
   if [ "$backend" = "k8s" ] && [ "$k8s_image_prepared" = "false" ]; then
     if [ "$K8S_BUILD_IMAGE" = "true" ]; then
-      echo "Building and importing Sidewhale image for k8s..."
-      make integration-test-upstream-k8s-sidewhale-image \
-        K8S_SIDEWHALE_IMAGE="${K8S_SIDEWHALE_IMAGE:-sidewhale:dev}" \
-        K8S_CLUSTER_NAME="${K8S_CLUSTER_NAME:-sidewhale-k8s}"
+      echo "Building and importing TestTender image for k8s..."
+      make integration-test-upstream-k8s-testtender-image \
+        K8S_TESTTENDER_IMAGE="${K8S_TESTTENDER_IMAGE:-testtender:dev}" \
+        K8S_CLUSTER_NAME="${K8S_CLUSTER_NAME:-testtender-k8s}"
     fi
     k8s_image_prepared=true
   fi
@@ -101,17 +101,17 @@ for backend in "${BACKENDS[@]}"; do
     if [ "$K8S_RESET" = "true" ]; then
       echo "Resetting k8s baseline (mode=$K8S_RESET_MODE)..."
       make integration-test-upstream-k8s-reset \
-        K8S_CONTEXT="${K8S_CONTEXT:-k3d-sidewhale-k8s}" \
-        K8S_NAMESPACE="${K8S_NAMESPACE:-sidewhale-system}" \
-        K8S_CLUSTER_NAME="${K8S_CLUSTER_NAME:-sidewhale-k8s}" \
-        K8S_SIDEWHALE_IMAGE="${K8S_SIDEWHALE_IMAGE:-sidewhale:dev}" \
+        K8S_CONTEXT="${K8S_CONTEXT:-k3d-testtender-k8s}" \
+        K8S_NAMESPACE="${K8S_NAMESPACE:-testtender-system}" \
+        K8S_CLUSTER_NAME="${K8S_CLUSTER_NAME:-testtender-k8s}" \
+        K8S_TESTTENDER_IMAGE="${K8S_TESTTENDER_IMAGE:-testtender:dev}" \
         K8S_RESET_MODE="$K8S_RESET_MODE"
     fi
     k8s_reset_done=true
   fi
 
   if [ "$backend" = "k8s" ] && [ "$k8s_images_prewarmed" = "false" ]; then
-    prewarm_k8s_images "$K8S_PREPULL_IMAGES_RAW" "${K8S_CLUSTER_NAME:-sidewhale-k8s}"
+    prewarm_k8s_images "$K8S_PREPULL_IMAGES_RAW" "${K8S_CLUSTER_NAME:-testtender-k8s}"
     k8s_images_prewarmed=true
   fi
 

@@ -1,0 +1,23 @@
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  generateName: testtender-example
+spec:
+  params:
+    - name: git-url
+      value: "https://github.com/obegron/TestTender.git"
+    - name: git-revision
+      value: "main"
+    - name: context-dir
+      value: "examples/testcontainers-java"
+  pipelineRef:
+    name: testtender-example
+  workspaces:
+    - name: source
+      volumeClaimTemplate:
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 1Gi

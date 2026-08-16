@@ -1,214 +1,23 @@
 package main
 
 import (
-	"context"
-	"errors"
-	"fmt"
-	"net"
-	"net/http"
-	"os"
-	"os/signal"
-	"runtime"
-	"strings"
-	"syscall"
-	"time"
+	_ "embed"
+
+	"github.com/obegron/testtender/cmd"
 )
 
-var version = "dev"
-var gitCommit = "unknown"
-var buildTime = "unknown"
-var goVersion = runtime.Version()
+//go:embed README.md
+var readme string
 
-const extractorVersion = "v2"
+//go:embed config.md
+var config string
+
+//go:embed LICENSE
+var license string
 
 func main() {
-	cfg, printVersion, err := initConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "config init failed: %v\n", err)
-		os.Exit(1)
-	}
-	if printVersion {
-		fmt.Println(version)
-		return
-	}
-
-	if err := requireUnprivilegedRuntime(os.Geteuid()); err != nil {
-		fmt.Fprintf(os.Stderr, "startup check failed: %v\n", err)
-		os.Exit(1)
-	}
-	fmt.Printf(
-		"sidewhale starting version=%s git_commit=%s go=%s build_time=%s backend=%s listen=%s unix=%s state_dir=%s\n",
-		version,
-		gitCommit,
-		goVersion,
-		buildTime,
-		cfg.runtimeBackend,
-		cfg.listenAddr,
-		cfg.unixSocketPath,
-		cfg.stateDir,
-	)
-
-	store := &containerStore{
-		containers: make(map[string]*Container),
-		networks:   make(map[string]*Network),
-		execs:      make(map[string]*ExecInstance),
-		stateDir:   cfg.stateDir,
-		proxies:    make(map[string][]*portProxy),
-		sshCompat:  make(map[string]*sshCompatServer),
-		starting:   make(map[string]struct{}),
-	}
-	if err := store.init(); err != nil {
-		fmt.Fprintf(os.Stderr, "state init failed: %v\n", err)
-		os.Exit(1)
-	}
-
-	m := &metrics{}
-	if cfg.runtimeBackend == runtimeBackendK8s {
-		reconcileK8sRuntime(store, m, cfg.k8sRuntimeNamespace, cfg.k8sCleanupOrphans)
-	}
-	probes := &probeState{}
-	mux := newRouter(store, m, cfg, probes)
-	handler := requestBodyLimitMiddleware(cfg.maxRequestBodyBytes, cfg.maxArchiveBytes)(timeoutMiddleware(apiVersionMiddleware(resourceOwnershipMiddleware(store, mux))))
-	if traceHTTPEnabled() {
-		handler = traceHTTPMiddleware(handler)
-		fmt.Printf("sidewhale: http trace enabled via SIDEWHALE_TRACE_HTTP\n")
-	}
-
-	tlsConfig, err := loadServerTLSConfig(cfg.tlsClientCAFile)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "TLS config failed: %v\n", err)
-		os.Exit(1)
-	}
-	server := &http.Server{
-		Addr:              cfg.listenAddr,
-		Handler:           handler,
-		TLSConfig:         tlsConfig,
-		ReadHeaderTimeout: 5 * time.Second,
-		// Keep request body streaming unbounded in duration so large archive uploads
-		// (PUT /containers/{id}/archive) are not reset mid-transfer.
-		ReadTimeout:  0,
-		WriteTimeout: 0,
-		IdleTimeout:  5 * time.Minute,
-	}
-	if traceHTTPEnabled() {
-		server.ConnState = func(conn net.Conn, state http.ConnState) {
-			fmt.Printf("sidewhale: trace conn event=state remote=%s state=%s\n", conn.RemoteAddr().String(), state)
-		}
-	}
-
-	errCh := make(chan error, 2)
-	started := 0
-
-	tcpAddr := strings.TrimSpace(cfg.listenAddr)
-	if tcpAddr != "" && !strings.EqualFold(tcpAddr, "off") && tcpAddr != "-" {
-		started++
-		go func() {
-			tlsEnabled := cfg.tlsCertFile != ""
-			if tlsEnabled {
-				fmt.Printf("sidewhale listening with TLS on %s\n", tcpAddr)
-			} else {
-				fmt.Printf("sidewhale listening on %s\n", tcpAddr)
-			}
-			var err error
-			if tlsEnabled {
-				err = server.ListenAndServeTLS(cfg.tlsCertFile, cfg.tlsKeyFile)
-			} else {
-				err = server.ListenAndServe()
-			}
-			if err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- err
-			}
-		}()
-	}
-
-	if cfg.unixSocketPath != "" {
-		ln, err := listenUnixSocket(cfg.unixSocketPath)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "unix socket setup failed: %v\n", err)
-			os.Exit(1)
-		}
-		started++
-		go func() {
-			fmt.Printf("sidewhale listening on unix://%s\n", cfg.unixSocketPath)
-			if err := server.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				errCh <- err
-			}
-		}()
-	}
-
-	if started == 0 {
-		fmt.Fprintln(os.Stderr, "no listeners configured")
-		os.Exit(1)
-	}
-
-	probes.setReady(true)
-	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stopSignals()
-
-	select {
-	case <-signalCtx.Done():
-		probes.setReady(false)
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := server.Shutdown(shutdownCtx); err != nil {
-			fmt.Fprintf(os.Stderr, "graceful shutdown failed: %v\n", err)
-			_ = server.Close()
-		}
-		stopped := store.stopAllRunning(2 * time.Second)
-		fmt.Printf("sidewhale stopped %d running containers\n", stopped)
-	case err := <-errCh:
-		probes.setReady(false)
-		_ = server.Close()
-		stopped := store.stopAllRunning(2 * time.Second)
-		fmt.Fprintf(os.Stderr, "server error: %v (stopped %d containers)\n", err, stopped)
-		os.Exit(1)
-	}
-}
-
-func apiVersionMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if rewritten, ok := rewriteVersionedPath(r.URL.Path); ok {
-			r.URL.Path = rewritten
-			r.URL.RawPath = rewritten
-		}
-		next.ServeHTTP(w, r)
-	})
-}
-
-func rewriteVersionedPath(path string) (string, bool) {
-	if !strings.HasPrefix(path, "/v") {
-		return "", false
-	}
-	rest := path[2:]
-	slash := strings.IndexByte(rest, '/')
-	if slash <= 0 {
-		return "", false
-	}
-	versionPart := rest[:slash]
-	if !isAPIVersion(versionPart) {
-		return "", false
-	}
-	rewritten := rest[slash:]
-	if rewritten == "" {
-		return "/", true
-	}
-	return rewritten, true
-}
-
-func isAPIVersion(v string) bool {
-	parts := strings.Split(v, ".")
-	if len(parts) != 2 {
-		return false
-	}
-	for _, p := range parts {
-		if p == "" {
-			return false
-		}
-		for _, ch := range p {
-			if ch < '0' || ch > '9' {
-				return false
-			}
-		}
-	}
-	return true
+	cmd.README = readme
+	cmd.LICENSE = license
+	cmd.CONFIG = config
+	cmd.Execute()
 }

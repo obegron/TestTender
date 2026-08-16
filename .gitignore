@@ -1,1 +1,13 @@
-sidewhale
+.idea
+.DS_Store
+.vscode
+.settings
+.classpath
+.project
+*~
+coverage.out
+_archive
+dist/
+target/
+*.iml
+node_modules/

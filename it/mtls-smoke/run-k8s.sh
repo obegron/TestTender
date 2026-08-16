@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-context="${K8S_CONTEXT:-k3d-sidewhale-k8s}"
-namespace="${K8S_NAMESPACE:-sidewhale-system}"
-job_name="${K8S_MTLS_JOB_NAME:-sidewhale-mtls-isolation}"
+context="${K8S_CONTEXT:-k3d-testtender-k8s}"
+namespace="${K8S_NAMESPACE:-testtender-system}"
+job_name="${K8S_MTLS_JOB_NAME:-testtender-mtls-isolation}"
 timeout="${K8S_MTLS_TIMEOUT:-180s}"
 
 kubectl --context "${context}" -n "${namespace}" delete job "${job_name}" --ignore-not-found >/dev/null

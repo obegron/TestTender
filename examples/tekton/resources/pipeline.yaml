@@ -1,0 +1,35 @@
+apiVersion: tekton.dev/v1beta1
+kind: Pipeline
+metadata:
+  name: testtender-example
+spec:
+  params:
+    - name: git-url
+    - name: git-revision
+    - name: context-dir
+  workspaces:
+    - name: shared-workspace
+  tasks:
+  - name: clone
+    taskRef:
+      name: git-clone
+    workspaces:
+    - name: output
+      workspace: shared-workspace
+    params:
+    - name: url
+      value: $(params.git-url)
+    - name: revision
+      value: $(params.git-revision)
+  - name: test
+    taskRef:
+      name: mvn-test
+      kind: Task
+    runAfter:
+      - clone
+    workspaces:
+    - name: source
+      workspace: shared-workspace
+    params:
+    - name: contextDir
+      value: $(params.context-dir)

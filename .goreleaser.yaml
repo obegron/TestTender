@@ -1,0 +1,49 @@
+version: 2
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - windows
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/obegron/testtender/internal/config.Date={{ .Now.Format "20060102-150405" }}
+        -X github.com/obegron/testtender/internal/config.Build={{ .FullCommit }}
+        -X github.com/obegron/testtender/internal/config.Version={{ if .IsSnapshot }}latest{{ else }}{{ .Version }}{{ end }}
+        -X github.com/obegron/testtender/internal/config.Image=ghcr.io/obegron/testtender:{{ if .IsSnapshot }}latest{{ else }}{{ .Version }}{{ end }}
+
+archives:
+  - formats: [tar.gz]
+    # this name template makes the OS and Arch compatible with the results of `uname`.
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Os }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    # use zip for windows archives
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+
+# Disable changelog, that is maintained by ReleaseDrafter
+changelog:
+  disable: true
+
+# We don't add the source archive, that is by default added by to the GitHub release
+source:
+  enabled: false
+
+release:
+  name_template: "testtender-{{.Version}}"

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-job_name="${K8S_KAFKA_UPSTREAM_IT_JOB_NAME:-sidewhale-kafka-upstream-shape-it}"
-namespace="${K8S_NAMESPACE:-sidewhale-system}"
+job_name="${K8S_KAFKA_UPSTREAM_IT_JOB_NAME:-testtender-kafka-upstream-shape-it}"
+namespace="${K8S_NAMESPACE:-testtender-system}"
 image="${K8S_KAFKA_UPSTREAM_IT_IMAGE:-nicolaka/netshoot:latest}"
-docker_host="${K8S_SIDEWHALE_DOCKER_HOST:-tcp://sidewhale:23750}"
+docker_host="${K8S_TESTTENDER_DOCKER_HOST:-tcp://testtender:23750}"
 container_name="${K8S_KAFKA_UPSTREAM_IT_CONTAINER_NAME:-kafka-upstream-shape-it}"
 
 cat <<YAML
@@ -19,7 +19,7 @@ spec:
   template:
     metadata:
       labels:
-        sidewhale.io/client: "true"
+        testtender.io/client: "true"
     spec:
       restartPolicy: Never
       containers:

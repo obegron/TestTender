@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-job_name="${K8S_UPSTREAM_JOB_NAME:-sidewhale-upstream-tests}"
-namespace="${K8S_NAMESPACE:-sidewhale-system}"
-image="${K8S_UPSTREAM_RUNNER_IMAGE:-sidewhale-test-runner}:${K8S_UPSTREAM_RUNNER_TAG:-dev}"
-docker_host="${K8S_SIDEWHALE_DOCKER_HOST:-tcp://sidewhale:23750}"
+job_name="${K8S_UPSTREAM_JOB_NAME:-testtender-upstream-tests}"
+namespace="${K8S_NAMESPACE:-testtender-system}"
+image="${K8S_UPSTREAM_RUNNER_IMAGE:-testtender-test-runner}:${K8S_UPSTREAM_RUNNER_TAG:-dev}"
+docker_host="${K8S_TESTTENDER_DOCKER_HOST:-tcp://testtender:2475}"
 upstream_task="${K8S_UPSTREAM_TASK:-:testcontainers:test}"
 upstream_test_args="${K8S_UPSTREAM_TEST_ARGS---tests org.testcontainers.containers.ContainerStateTest}"
 extra_gradle_args="${K8S_UPSTREAM_EXTRA_GRADLE_ARGS---rerun-tasks --max-workers=1 --no-daemon}"
+expected_tests="${K8S_UPSTREAM_EXPECTED_TESTS:-}"
 
 cat <<YAML
 apiVersion: batch/v1
@@ -21,9 +22,10 @@ spec:
   template:
     metadata:
       labels:
-        sidewhale.io/client: "true"
+        testtender.io/client: "true"
     spec:
       restartPolicy: Never
+      automountServiceAccountToken: false
       containers:
         - name: runner
           image: ${image}
@@ -43,6 +45,8 @@ spec:
               value: "${upstream_test_args}"
             - name: UPSTREAM_TC_EXTRA_GRADLE_ARGS
               value: "${extra_gradle_args}"
+            - name: UPSTREAM_TC_EXPECTED_TESTS
+              value: "${expected_tests}"
           volumeMounts:
             - name: workspace
               mountPath: /workspace

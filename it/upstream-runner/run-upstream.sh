@@ -9,8 +9,9 @@ BUNDLED_REPO_DIR="${UPSTREAM_TC_BUNDLED_DIR:-/opt/testcontainers-java}"
 TASK="${UPSTREAM_TC_TASK:-:testcontainers:test}"
 TEST_ARGS_RAW="${UPSTREAM_TC_TEST_ARGS---tests org.testcontainers.containers.ContainerStateTest}"
 EXTRA_GRADLE_ARGS_RAW="${UPSTREAM_TC_EXTRA_GRADLE_ARGS---rerun-tasks --max-workers=1 --no-daemon}"
+EXPECTED_TESTS="${UPSTREAM_TC_EXPECTED_TESTS:-}"
 
-export DOCKER_HOST="${DOCKER_HOST:-tcp://${SIDEWHALE_SERVICE_HOST:-sidewhale}:23750}"
+export DOCKER_HOST="${DOCKER_HOST:-tcp://${TESTTENDER_SERVICE_HOST:-testtender}:2475}"
 export TESTCONTAINERS_RYUK_DISABLED="${TESTCONTAINERS_RYUK_DISABLED:-true}"
 export TESTCONTAINERS_CHECKS_DISABLE="${TESTCONTAINERS_CHECKS_DISABLE:-true}"
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/opt/gradle-home}"
@@ -47,9 +48,12 @@ echo "[runner] DOCKER_HOST=$DOCKER_HOST"
 echo "[runner] TASK=$TASK"
 echo "[runner] TEST_ARGS=$TEST_ARGS_RAW"
 echo "[runner] EXTRA_GRADLE_ARGS=$EXTRA_GRADLE_ARGS_RAW"
+if [ -n "$EXPECTED_TESTS" ]; then
+  echo "[runner] EXPECTED_TESTS=$EXPECTED_TESTS"
+fi
 
 if ! curl -fsS "${DOCKER_HOST/tcp:\/\//http://}/_ping" >/dev/null; then
-  echo "[runner] sidewhale not reachable at $DOCKER_HOST"
+  echo "[runner] testtender not reachable at $DOCKER_HOST"
   exit 1
 fi
 
@@ -64,4 +68,28 @@ fi
 
 cd "$REPO_DIR"
 set -x
+set +e
 ./gradlew "$TASK" "${TEST_ARGS[@]}" "${EXTRA_GRADLE_ARGS[@]}"
+gradle_status=$?
+set -e
+set +x
+
+if [ -n "$EXPECTED_TESTS" ]; then
+  result_dir="${UPSTREAM_TC_RESULT_DIR:-$REPO_DIR/core/build/test-results/test}"
+  actual_tests="$({
+    find "$result_dir" -maxdepth 1 -type f -name 'TEST-*.xml' -exec awk '
+      match($0, /tests="[0-9]+"/) {
+        value = substr($0, RSTART + 7, RLENGTH - 8)
+        total += value
+      }
+      END { print total + 0 }
+    ' {} +
+  } 2>/dev/null || true)"
+  actual_tests="${actual_tests:-0}"
+  if [ "$actual_tests" != "$EXPECTED_TESTS" ]; then
+    echo "[runner] expected $EXPECTED_TESTS selected tests, but Gradle reported $actual_tests" >&2
+    exit 2
+  fi
+fi
+
+exit "$gradle_status"

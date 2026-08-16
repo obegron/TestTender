@@ -1,0 +1,210 @@
+package tar
+
+import (
+	"archive/tar"
+	"bytes"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+
+	"k8s.io/klog"
+)
+
+// CompressionType represents the type of compression used in the tar archive.
+type CompressionType int
+
+const (
+	// Unknown represents an unknown or uncompressed tar archive.
+	Unknown CompressionType = iota
+	// Gzip represents gzip compressed tar archive.
+	Gzip
+	// Bzip2 represents bzip2 compressed tar archive.
+	Bzip2
+	// Xz represents xz compressed tar archive.
+	Xz
+)
+
+// PackFolder will write the given folder as a tar to the given Writer.
+func PackFolder(src string, buf io.Writer) error {
+	tw := tar.NewWriter(buf)
+
+	// walk through every file in the folder
+	filepath.Walk(src, func(file string, fi os.FileInfo, err error) error {
+		// generate tar header
+		header, err := tar.FileInfoHeader(fi, file)
+		if err != nil {
+			return err
+		}
+
+		rel, err := filepath.Rel(src, file)
+		if err != nil {
+			return err
+		}
+
+		header.Name = filepath.ToSlash(rel)
+		if err := tw.WriteHeader(header); err != nil {
+			return err
+		}
+
+		klog.V(4).Infof("add to tar file: %s", header.Name)
+
+		// if not a dir, write file content
+		if !fi.IsDir() {
+			data, err := os.Open(file)
+			if err != nil {
+				return err
+			}
+			if _, err := io.Copy(tw, data); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	// produce tar
+	if err := tw.Close(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// UnpackFile will extract the given file from the given archive to the
+// given dest writer.
+func UnpackFile(dst, fname string, archive io.Reader, dest io.Writer) error {
+	tr, err := NewReader(archive)
+	if err != nil {
+		return err
+	}
+	for {
+		header, err := tr.Next()
+		if err != nil {
+			return err
+		}
+		if header != nil && path.Join(dst, header.Name) == fname {
+			_, err = io.Copy(dest, tr)
+			return err
+		}
+	}
+}
+
+// GetTargetFolderNames will return all affected folders in the archive
+// provided.
+func GetTargetFolderNames(dst string, archive io.Reader) ([]string, error) {
+	return getTargets(dst, archive, tar.TypeDir)
+}
+
+// GetTargetFileNames will return all file names in the archive
+// provided.
+func GetTargetFileNames(dst string, archive io.Reader) ([]string, error) {
+	return getTargets(dst, archive, tar.TypeReg)
+}
+
+// GetFileMode will return the file mode permissions of the given file in
+// the archive.
+func GetFileMode(dst string, fname string, archive io.Reader) (os.FileMode, error) {
+	tr, err := NewReader(archive)
+	if err != nil {
+		return 0, err
+	}
+	for {
+		header, err := tr.Next()
+		if err != nil {
+			return 0, err
+		}
+		if header != nil && path.Join(dst, header.Name) == fname {
+			return header.FileInfo().Mode(), nil
+		}
+	}
+}
+
+// getTargets will return all given asset names of type (dir/file).
+func getTargets(dst string, archive io.Reader, typ byte) ([]string, error) {
+	res := []string{}
+	tr, err := NewReader(archive)
+	if err != nil {
+		return nil, err
+	}
+	for {
+		header, err := tr.Next()
+		switch {
+		case err == io.EOF:
+			return res, nil
+		case err != nil:
+			return res, err
+		case header == nil:
+			continue
+		}
+		target := path.Join(dst, header.Name)
+		if header.Typeflag == typ {
+			res = append(res, target)
+		}
+	}
+}
+
+// IsSingleFileArchive will return true if there is only 1 file stored in the
+// given archive.
+func IsSingleFileArchive(archive []byte) bool {
+	tr, err := NewReader(bytes.NewReader(archive))
+	if err != nil {
+		klog.Errorf("error reading tar archive: %v", err)
+		return false
+	}
+	count := 0
+	for count < 2 {
+		header, err := tr.Next()
+		if err != nil {
+			return count == 1
+		}
+		if header.Typeflag == tar.TypeReg {
+			count++
+		}
+	}
+	return count == 1
+}
+
+// GetTarSize will return the actual size of the tar file for a byte array
+// containing padded tar data.
+func GetTarSize(dat []byte) (int, error) {
+	var err error
+
+	tr, err := NewReader(bytes.NewReader(dat))
+	if err != nil {
+		return 0, err
+	}
+
+	for {
+		if _, err = tr.Next(); err != nil {
+			if err == io.EOF {
+				err = nil
+			}
+			break
+		}
+		io.Copy(io.Discard, tr)
+	}
+
+	return tr.ReadBytes(), err
+}
+
+// detectCompressionType determines the compression type based on magic bytes.
+func detectCompressionType(dat []byte) CompressionType {
+	if len(dat) < 3 {
+		return Unknown
+	}
+	switch {
+	case bytes.HasPrefix(dat, []byte{0x1f, 0x8b}): // Gzip
+		return Gzip
+	case bytes.HasPrefix(dat, []byte{0xfd, '7', 'z', 'X', 'Z'}): // XZ
+		return Xz
+	case bytes.HasPrefix(dat, []byte{'B', 'Z', 'h'}): // Bzip2
+		return Bzip2
+	default:
+		return Unknown
+	}
+}
+
+// IsCompressed checks if the provided archive is compressed.
+func IsCompressed(dat []byte) bool {
+	return detectCompressionType(dat) != Unknown
+}

@@ -1,0 +1,112 @@
+package httputil
+
+import (
+	"fmt"
+	"io"
+	"net/http"
+	"regexp"
+	"strings"
+
+	"github.com/gin-gonic/gin"
+	"k8s.io/klog"
+)
+
+// Error will return an error response in json.
+func Error(c *gin.Context, status int, err error) {
+	klog.Errorf("error during request[%d]: %s", status, err)
+	c.JSON(status, gin.H{
+		"message": err.Error(),
+	})
+}
+
+// NotImplemented will return a not implented response.
+func NotImplemented(c *gin.Context) {
+	c.Writer.WriteHeader(http.StatusNotImplemented)
+}
+
+// NoContent will return a no content response.
+func NoContent(c *gin.Context) {
+	c.Writer.WriteHeader(http.StatusNoContent)
+}
+
+// HijackConnection interrupts the http response writer to get the
+// underlying connection and operate with it.
+func HijackConnection(w http.ResponseWriter) (io.ReadCloser, io.Writer, error) {
+	conn, _, err := w.(http.Hijacker).Hijack()
+	if err != nil {
+		return nil, nil, err
+	}
+	// Flush the options to make sure the client sets the raw mode
+	_, _ = conn.Write([]byte{})
+	return conn, conn, nil
+}
+
+// UpgradeConnection will upgrade the Hijacked connection.
+func UpgradeConnection(r *http.Request, out io.Writer) {
+	if _, ok := r.Header["Upgrade"]; ok {
+		fmt.Fprint(out, "HTTP/1.1 101 UPGRADED\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n")
+	} else {
+		fmt.Fprint(out, "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\n")
+	}
+	fmt.Fprint(out, "\r\n")
+}
+
+// CloseStreams ensures that a list for http streams are properly closed.
+func CloseStreams(streams ...interface{}) {
+	for _, stream := range streams {
+		if tcpc, ok := stream.(interface {
+			CloseWrite() error
+		}); ok {
+			_ = tcpc.CloseWrite()
+		} else if closer, ok := stream.(io.Closer); ok {
+			_ = closer.Close()
+		}
+	}
+}
+
+// RequestLoggerMiddleware logs bounded request metadata. It deliberately does
+// not inspect headers or bodies: Docker requests can contain registry
+// credentials, test secrets, and multi-gigabyte archive streams.
+func RequestLoggerMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		klog.V(4).Infof(
+			"request method=%s path=%s content-type=%q content-length=%d",
+			c.Request.Method,
+			c.Request.URL.Path,
+			c.ContentType(),
+			c.Request.ContentLength,
+		)
+		c.Next()
+	}
+}
+
+// ResponseLoggerMiddleware logs response metadata without retaining streamed
+// container output or archive data in control-plane memory.
+func ResponseLoggerMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		c.Next()
+		klog.V(4).Infof("response status=%d bytes=%d", c.Writer.Status(), c.Writer.Size())
+	}
+}
+
+// VersionAliasMiddleware is a gin-gonic middleware that will remove /v1.xx
+// and /v4.x.y from the url path (ignoring versioned apis).
+func VersionAliasMiddleware(router *gin.Engine) gin.HandlerFunc {
+	red := regexp.MustCompile(`^/v1.[0-9]+`)
+	rep := regexp.MustCompile(`^/v[1-9]+.[0-9]+.[0-9]+`)
+	return func(c *gin.Context) {
+		if strings.HasPrefix(c.Request.URL.Path, "/v1.") {
+			c.Request.URL.Path = red.ReplaceAllString(c.Request.URL.Path, ``)
+			router.HandleContext(c)
+			c.Abort()
+			return
+		}
+		if matched, _ := regexp.MatchString(`^/v[1-9]+.[0-9]+.[0-9]+`, c.Request.URL.Path); matched {
+			c.Request.URL.Path = rep.ReplaceAllString(c.Request.URL.Path, ``)
+			router.HandleContext(c)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}

@@ -1,0 +1,10 @@
+.git
+.github
+assets
+deploy
+dist
+docs
+examples
+it
+target
+coverage.out

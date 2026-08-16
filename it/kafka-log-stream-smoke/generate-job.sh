@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-job_name="${K8S_KAFKA_LOG_IT_JOB_NAME:-sidewhale-kafka-log-it}"
-namespace="${K8S_NAMESPACE:-sidewhale-system}"
+job_name="${K8S_KAFKA_LOG_IT_JOB_NAME:-testtender-kafka-log-it}"
+namespace="${K8S_NAMESPACE:-testtender-system}"
 image="${K8S_KAFKA_LOG_IT_IMAGE:-nicolaka/netshoot:latest}"
-docker_host="${K8S_SIDEWHALE_DOCKER_HOST:-tcp://sidewhale:23750}"
+docker_host="${K8S_TESTTENDER_DOCKER_HOST:-tcp://testtender:23750}"
 container_name="${K8S_KAFKA_LOG_IT_CONTAINER_NAME:-kafka-it-log-smoke}"
 
 cat <<YAML
@@ -19,7 +19,7 @@ spec:
   template:
     metadata:
       labels:
-        sidewhale.io/client: "true"
+        testtender.io/client: "true"
     spec:
       restartPolicy: Never
       containers:
@@ -89,13 +89,13 @@ spec:
               for i in \$(seq 1 120); do
                 logs="\$(curl -sS "\${base}/containers/\${cid}/logs?stdout=1&stderr=1&tail=200" || true)"
                 if printf '%s' "\${logs}" | grep -q "Transitioning from RECOVERY to RUNNING"; then
-                  echo "observed Kafka lifecycle transition in sidewhale logs endpoint"
+                  echo "observed Kafka lifecycle transition in testtender logs endpoint"
                   exit 0
                 fi
                 sleep 1
               done
 
-              echo "did not observe expected Kafka lifecycle transition in sidewhale logs endpoint"
+              echo "did not observe expected Kafka lifecycle transition in testtender logs endpoint"
               curl -sS "\${base}/containers/\${cid}/logs?stdout=1&stderr=1&tail=300" | tail -n 300 || true
               exit 1
 YAML

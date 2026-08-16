@@ -10,7 +10,7 @@ TASK="${UPSTREAM_TC_TASK:-:testcontainers:test}"
 TEST_ARGS_RAW="${UPSTREAM_TC_TEST_ARGS---tests org.testcontainers.containers.ContainerStateTest}"
 EXTRA_GRADLE_ARGS_RAW="${UPSTREAM_TC_EXTRA_GRADLE_ARGS---rerun-tasks --max-workers=1 --no-daemon}"
 
-export DOCKER_HOST="${DOCKER_HOST:-tcp://${SIDEWHALE_SERVICE_HOST:-sidewhale}:23750}"
+export DOCKER_HOST="${DOCKER_HOST:-tcp://${TESTTENDER_SERVICE_HOST:-testtender}:2475}"
 export TESTCONTAINERS_RYUK_DISABLED="${TESTCONTAINERS_RYUK_DISABLED:-true}"
 export TESTCONTAINERS_CHECKS_DISABLE="${TESTCONTAINERS_CHECKS_DISABLE:-true}"
 export GRADLE_USER_HOME="${GRADLE_USER_HOME:-/workspace/.gradle}"
@@ -49,7 +49,7 @@ echo "[runner] TEST_ARGS=$TEST_ARGS_RAW"
 echo "[runner] EXTRA_GRADLE_ARGS=$EXTRA_GRADLE_ARGS_RAW"
 
 if ! curl -fsS "${DOCKER_HOST/tcp:\/\//http://}/_ping" >/dev/null; then
-  echo "[runner] sidewhale not reachable at $DOCKER_HOST"
+  echo "[runner] testtender not reachable at $DOCKER_HOST"
   exit 1
 fi
 

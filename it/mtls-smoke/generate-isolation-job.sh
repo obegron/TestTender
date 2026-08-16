@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-namespace="${K8S_NAMESPACE:-sidewhale-system}"
-job_name="${K8S_MTLS_JOB_NAME:-sidewhale-mtls-isolation}"
-image="${K8S_JAVA_SMOKE_IMAGE:-sidewhale-testcontainers-smoke}:${K8S_JAVA_SMOKE_TAG:-dev}"
-client_a_secret="${K8S_MTLS_CLIENT_A_SECRET:-sidewhale-client-a-tls}"
-client_b_secret="${K8S_MTLS_CLIENT_B_SECRET:-sidewhale-client-b-tls}"
-api="https://sidewhale.${namespace}.svc.cluster.local:23750"
+namespace="${K8S_NAMESPACE:-testtender-system}"
+job_name="${K8S_MTLS_JOB_NAME:-testtender-mtls-isolation}"
+image="${K8S_JAVA_SMOKE_IMAGE:-testtender-testcontainers-smoke}:${K8S_JAVA_SMOKE_TAG:-dev}"
+client_a_secret="${K8S_MTLS_CLIENT_A_SECRET:-testtender-client-a-tls}"
+client_b_secret="${K8S_MTLS_CLIENT_B_SECRET:-testtender-client-b-tls}"
+api="https://testtender.${namespace}.svc.cluster.local:23750"
 hold_seconds="${K8S_MTLS_HOLD_SECONDS:-0}"
 
 cat <<YAML
@@ -21,7 +21,7 @@ spec:
   template:
     metadata:
       labels:
-        sidewhale.io/client: "true"
+        testtender.io/client: "true"
     spec:
       restartPolicy: Never
       automountServiceAccountToken: false

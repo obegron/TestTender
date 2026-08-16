@@ -1,0 +1,18 @@
+{
+  "version": "v1",
+  "defaultAction": "deny",
+  "rules": [
+    {
+      "source": "postgres:16",
+      "target": "registry.internal/testcontainers/postgres:16"
+    },
+    {
+      "source": "redis:7-alpine",
+      "target": "registry.internal/testcontainers/redis:7-alpine"
+    },
+    {
+      "source": "gvenzl/oracle-free:23-slim-faststart",
+      "target": "registry.internal/testcontainers/oracle-free:23-slim-faststart"
+    }
+  ]
+}
