@@ -11,6 +11,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/obegron/testtender/internal/model/types"
+	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
 	"github.com/obegron/testtender/internal/util/podtemplate"
 )
 
@@ -45,6 +46,7 @@ type instance struct {
 	containerTemplate corev1.Container
 	initImage         string
 	imagePullSecrets  []string
+	secretPolicy      *secretpolicy.Policy
 	namespace         string
 	timeOut           int
 	disableServices   bool
@@ -61,6 +63,9 @@ type Config struct {
 	// ImagePullSecrets is an optional list of image pull secrets that need
 	// to be added to the used pod templates
 	ImagePullSecrets []string
+	// AllowedSecrets is the exact list of namespace-local Secret names that
+	// workloads may reference through testtender.io/secret-env.* labels.
+	AllowedSecrets []string
 	// InitImage is the image that is used as init container to prepare vols
 	InitImage string
 	// TimeOut is the max amount of time to wait until a container started
@@ -84,6 +89,10 @@ func New(cfg Config) (Backend, error) {
 			return nil, fmt.Errorf("error opening podtemplate: %w", err)
 		}
 	}
+	secretPolicy, err := secretpolicy.New(cfg.AllowedSecrets)
+	if err != nil {
+		return nil, fmt.Errorf("configure Secret policy: %w", err)
+	}
 
 	return &instance{
 		cli:               cfg.Client,
@@ -91,6 +100,7 @@ func New(cfg Config) (Backend, error) {
 		initImage:         cfg.InitImage,
 		namespace:         cfg.Namespace,
 		imagePullSecrets:  cfg.ImagePullSecrets,
+		secretPolicy:      secretPolicy,
 		podTemplate:       pod,
 		containerTemplate: podtemplate.ContainerFromPod(pod),
 		timeOut:           int(cfg.TimeOut.Seconds()),

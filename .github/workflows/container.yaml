@@ -36,4 +36,6 @@ jobs:
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          tags: ghcr.io/obegron/testtender:latest
+          tags: |
+            ghcr.io/obegron/testtender:latest
+            ghcr.io/obegron/testtender:${{ github.sha }}

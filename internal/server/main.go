@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/viper"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/obegron/testtender/internal/backend"
 	imagepolicy "github.com/obegron/testtender/internal/policy/image"
+	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
 	"github.com/obegron/testtender/internal/server/httputil"
 	"github.com/obegron/testtender/internal/server/routes"
 	"github.com/obegron/testtender/internal/server/routes/common"
@@ -42,8 +44,20 @@ func (s *Server) Run(ctx context.Context) error {
 	} else {
 		klog.Warning("image policy disabled; requested image names are not restricted")
 	}
+	allowedSecretsRaw := strings.ReplaceAll(viper.GetString("kubernetes.allowed-secrets"), " ", "")
+	allowedSecrets := []string{}
+	if allowedSecretsRaw != "" {
+		allowedSecrets = strings.Split(allowedSecretsRaw, ",")
+	}
+	secretPolicy, err := secretpolicy.New(allowedSecrets)
+	if err != nil {
+		return fmt.Errorf("load Secret policy: %w", err)
+	}
+	if len(allowedSecrets) > 0 {
+		klog.Infof("Secret environment references enabled for %d exact Secret names", len(allowedSecrets))
+	}
 
-	router := s.getGinEngine(resolver)
+	router := s.getGinEngine(resolver, secretPolicy)
 	router.SetTrustedProxies(nil)
 
 	socket := viper.GetString("server.socket")
@@ -90,7 +104,7 @@ func (s *Server) Run(ctx context.Context) error {
 
 // getGinEngine will return a gin.Engine router and configure the
 // appropriate middleware.
-func (s *Server) getGinEngine(imageResolver imagepolicy.Resolver) *gin.Engine {
+func (s *Server) getGinEngine(imageResolver imagepolicy.Resolver, secretPolicy *secretpolicy.Policy) *gin.Engine {
 	router := gin.New()
 	router.Use(httputil.VersionAliasMiddleware(router))
 	router.Use(gin.Logger())
@@ -165,6 +179,7 @@ func (s *Server) getGinEngine(imageResolver imagepolicy.Resolver) *gin.Engine {
 
 	cr, err := common.NewContextRouter(s.kub, common.Config{
 		ImageResolver:           imageResolver,
+		SecretPolicy:            secretPolicy,
 		Inspector:               insp,
 		RequestCPU:              reqcpu,
 		RequestMemory:           reqmem,

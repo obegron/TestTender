@@ -114,8 +114,8 @@ func ContainerCreate(cr *common.ContextRouter, c *gin.Context) {
 	for _, mount := range in.Mounts {
 		tainr.Binds = append(tainr.Binds, mount.Source+":"+mount.Destination)
 	}
-	if err := common.ValidateContainerRequest(tainr); err != nil {
-		httputil.Error(c, http.StatusBadRequest, err)
+	if err := cr.ValidateContainerRequest(tainr); err != nil {
+		httputil.Error(c, common.ContainerRequestErrorStatus(err), err)
 		return
 	}
 

@@ -31,6 +31,23 @@ port cases require the intentionally unsupported build API and are not port
 regressions. The remaining selected failures are two build-API exclusions,
 separate stderr selection, and archive access after workload termination.
 
+## Trusted-Team POC Gate
+
+The current tree is suitable for a controlled, non-production POC with one
+trusted tenant team in its existing dev/test namespace. It now has
+deny-by-default image rewriting, namespace-scoped worker RBAC, allowlisted
+Secret env/file references resolved only by the kubelet, a Docker API
+NetworkPolicy manifest, commit-SHA container tags, and retained PostgreSQL,
+Redis, Oracle and multi-container network evidence. NetworkPolicy enforcement
+is a target-CNI acceptance gate, not a portable property of the manifest.
+
+This is not approval for a shared service. Before the work POC starts, complete
+the site-specific items in [`poc-readiness.md`](poc-readiness.md): pin an image,
+configure internal mirrors and exact Secret names, apply namespace quotas, and
+run representative success/failure/cancellation cleanup through the real
+pipeline. OIDC ownership and concurrent-run isolation remain the next code
+gate before mutually untrusted or overlapping pipelines use one instance.
+
 ## Product Boundary
 
 The service exists to run short-lived Testcontainers workloads in a tenant's
@@ -170,7 +187,9 @@ acceptance suite additionally tracks:
 - [ ] two simultaneous runs using the same network aliases without collision
 - [ ] positive and negative owner-authorization tests
 - [ ] internal mirror operation with public internet egress disabled
-- [ ] tenant Secret env and volume references without TestTender reading the values
+- [x] allowlisted tenant Secret env references without TestTender reading values
+- [x] allowlisted tenant Secret files mounted below `/run/secrets` without
+      TestTender reading values
 
 The Go race suite is a release gate. The inherited reverse-proxy data race must
 be fixed before the first TestTender fork release.

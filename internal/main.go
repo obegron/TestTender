@@ -95,6 +95,7 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 	timeout := viper.GetDuration("kubernetes.timeout")
 	podtmpl := viper.GetString("kubernetes.pod-template")
 	imgpsr := strings.ReplaceAll(viper.GetString("kubernetes.image-pull-secrets"), " ", "")
+	allowedSecretsRaw := strings.ReplaceAll(viper.GetString("kubernetes.allowed-secrets"), " ", "")
 	dissvcs := viper.GetBool("disable-services")
 
 	optlog := ""
@@ -102,6 +103,11 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 	if imgpsr != "" {
 		optlog = fmt.Sprintf(", pull secrets=%s", imgpsr)
 		imgps = strings.Split(imgpsr, ",")
+	}
+	allowedSecrets := []string{}
+	if allowedSecretsRaw != "" {
+		allowedSecrets = strings.Split(allowedSecretsRaw, ",")
+		optlog += fmt.Sprintf(", allowed secrets=%d", len(allowedSecrets))
 	}
 
 	klog.Infof("kubernetes config: namespace=%s, initimage=%s, ready timeout=%s%s", ns, initimg, timeout, optlog)
@@ -112,6 +118,7 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 		Namespace:        ns,
 		InitImage:        initimg,
 		ImagePullSecrets: imgps,
+		AllowedSecrets:   allowedSecrets,
 		PodTemplate:      podtmpl,
 		TimeOut:          timeout,
 		DisableServices:  dissvcs,

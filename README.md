@@ -56,6 +56,14 @@ mvn test
 The API service needs namespace-scoped permissions to manage Pods, Services and
 ConfigMaps. See [config.md](config.md) for inherited runtime options.
 
+The supplied manifest also restricts Docker API ingress to same-namespace Pods
+labeled `testtender.io/client=true` and Tekton PipelineRun Pods. This requires a
+CNI that enforces Kubernetes NetworkPolicy. Argo CD can consume `deploy/` as a
+Kustomize base; use the commit-SHA image tag produced by CI for a POC rather
+than `latest`. Before relying on that restriction, run
+`it/network-policy-smoke/run.sh` against the target cluster as described in
+`docs/poc-readiness.md`.
+
 ## Image policy
 
 Pass `--image-policy-file` (or `IMAGE_POLICY_FILE`) to enable exact image
@@ -85,6 +93,35 @@ Familiar Docker names are normalized before matching, so `postgres:16` and
 temporarily preserves upstream allow-all behavior and produces a startup
 warning. The supplied Kubernetes manifest starts with a deny-all policy;
 restricted deployments should replace it with their Argo-managed allowlist.
+
+## Tenant Secret references
+
+TestTender can inject keys from explicitly allowlisted, namespace-local Secrets
+without reading their values. Configure exact names with `--allowed-secrets`
+(or `ALLOWED_SECRETS`), then add a label to the Testcontainers request:
+
+```java
+withLabel(
+    "testtender.io/secret-env.DB_PASSWORD",
+    "integration-database:password"
+)
+```
+
+The worker Pod receives a Kubernetes `secretKeyRef`; TestTender's service
+account does not need `get`, `list` or `watch` access to Secrets. An empty
+allowlist rejects every Secret reference.
+
+Docker-secret style files use the same allowlist:
+
+```java
+withLabel(
+    "testtender.io/secret-file.db_password",
+    "integration-database:password"
+)
+```
+
+The kubelet mounts that key read-only at `/run/secrets/db_password`. Clients
+cannot select another directory or reference a Secret in another namespace.
 
 ## License
 

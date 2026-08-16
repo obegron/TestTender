@@ -62,8 +62,8 @@ func ContainerCreate(cr *common.ContextRouter, c *gin.Context) {
 		Tty:          in.TTY,
 		OpenStdin:    in.OpenStdin,
 	}
-	if err := common.ValidateContainerRequest(tainr); err != nil {
-		httputil.Error(c, http.StatusBadRequest, err)
+	if err := cr.ValidateContainerRequest(tainr); err != nil {
+		httputil.Error(c, common.ContainerRequestErrorStatus(err), err)
 		return
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	"github.com/obegron/testtender/internal/model/types"
+	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
 )
 
 func TestValidateContainerRequestRejectsDockerSocket(t *testing.T) {
@@ -27,6 +28,32 @@ func TestValidateContainerRequestAllowsOrdinaryCopyMount(t *testing.T) {
 	container := &types.Container{Binds: []string{"/workspace/fixture:/opt/fixture:ro"}}
 	if err := ValidateContainerRequest(container); err != nil {
 		t.Fatalf("unexpected rejection: %v", err)
+	}
+}
+
+func TestContextRouterValidatesSecretReferencesAtCreate(t *testing.T) {
+	policy, err := secretpolicy.New([]string{"integration-database"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := &ContextRouter{SecretPolicy: policy}
+
+	allowed := &types.Container{Labels: map[string]string{
+		secretpolicy.EnvLabelPrefix + "PASSWORD": "integration-database:password",
+	}}
+	if err := router.ValidateContainerRequest(allowed); err != nil {
+		t.Fatalf("allowed reference rejected: %v", err)
+	}
+
+	denied := &types.Container{Labels: map[string]string{
+		secretpolicy.EnvLabelPrefix + "PASSWORD": "production-database:password",
+	}}
+	err = router.ValidateContainerRequest(denied)
+	if err == nil {
+		t.Fatal("non-allowlisted reference accepted")
+	}
+	if status := ContainerRequestErrorStatus(err); status != 403 {
+		t.Fatalf("status = %d, want 403", status)
 	}
 }
 

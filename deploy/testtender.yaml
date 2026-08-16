@@ -159,11 +159,32 @@ metadata:
   labels:
     app.kubernetes.io/name: testtender
 spec:
-  clusterIP: None
-  publishNotReadyAddresses: true
   selector:
     app.kubernetes.io/name: testtender
   ports:
     - name: docker-api
       port: 2475
       targetPort: docker-api
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: testtender-api
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: testtender
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              testtender.io/client: "true"
+        - podSelector:
+            matchExpressions:
+              - key: tekton.dev/pipelineRun
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 2475

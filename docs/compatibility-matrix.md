@@ -33,6 +33,8 @@ Status definitions:
 | Networks API | Confirmed | All five pinned network cases pass. Requested driver/options are compatibility metadata only; Kubernetes CNI selection remains cluster-managed. Concurrent-run alias collision/isolation is a separate acceptance target. |
 | TLS and client authentication | Unverified | Strict mTLS evidence belongs to the old prototype; authentication has not yet been reintroduced and rerun against the fork. |
 | Per-client resource ownership | Unverified | Required by the fork plan but not yet implemented in the imported baseline. |
+| Namespace-local Secret references | Confirmed | Exact allowlisted Secret names become kubelet-resolved `secretKeyRef` environment variables or read-only files below `/run/secrets`; TestTender has no Secret RBAC and never reads values. |
+| Docker API NetworkPolicy | Unverified | A same-namespace client policy is supplied, but the current local k3d CNI accepted it without enforcing the unlabeled-client deny case. Target-CNI negative evidence is required. |
 | Cross-container alias DNS | Confirmed | Both pinned two-container network cases pass through portless headless Services, including aliases for undeclared peer ports. |
 | Volumes and bind mounts | Out of scope | Host paths are deliberately not exposed. tmpfs/emptyDir and archive copy cover the MVP. |
 | Image build / ImageFromDockerfile | Out of scope | No Docker build API in the MVP. |

@@ -19,6 +19,7 @@ The `server` command is the actual testtender server, and is the command to star
 |server|--pull-policy|ifnotpresent|PULL_POLICY|Pull policy that should be applied (ifnotpresent,never,always)|
 |server|--service-account|default|SERVICE_ACCOUNT|Service account that should be used for deployed pods|
 |server|--image-pull-secrets||IMAGE_PULL_SECRETS|Comma separated list of image pull secrets that should be used|
+|server|--allowed-secrets||ALLOWED_SECRETS|Comma separated exact Secret names that workloads may reference|
 |server|--pod-template||POD_TEMPLATE|Pod file that should be used as the base for creating pods|
 |server|--pod-name-prefix||POD_NAME_PREFIX|The prefix of the name to be used in the created pods|
 |server|--inspector / -i|false||Enable image inspect to fetch container port config from a registry|
@@ -52,3 +53,28 @@ The `server` command is the actual testtender server, and is the command to star
 ## Labels and annotations
 
 Labels added to container images are added as annotations and labels to the created kubernetes pods. Additional labels and annotations can be added with the `--annotation` and `--label` cli argument. Environment variables that start with `K8S_ANNOTATION_` and `K8S_LABEL_` will be added as a kubernetes annotation or label as well. For example `K8S_ANNOTATION_FOO` will create an annotation `foo` with the value of the environment variable. Note that annotations and labels added via environment variables or cli will not be processed by testtender if they have a specific control function. For these occasions specific environment variables and cli arguments are present.
+
+### Namespace-local Secret environment variables
+
+An allowlisted namespace-local Secret key can be exposed to a workload through
+a Docker label. For example:
+
+```text
+testtender.io/secret-env.DB_PASSWORD=integration-database:password
+```
+
+`integration-database` must be listed in `--allowed-secrets` or
+`ALLOWED_SECRETS`. TestTender puts a `secretKeyRef` in the worker Pod and never
+reads the Secret object or value. The allowlist is exact, the namespace is
+always the configured worker namespace, ordinary environment variables cannot
+be overwritten, and each container is limited to 32 Secret references.
+
+The same key can be exposed with Docker-secret file semantics:
+
+```text
+testtender.io/secret-file.db_password=integration-database:password
+```
+
+This creates the read-only file `/run/secrets/db_password` from a projected
+Secret volume. The filename is taken from the label suffix and cannot contain a
+path separator; clients cannot choose another mount directory.

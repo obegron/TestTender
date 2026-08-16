@@ -16,6 +16,7 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 
 	"github.com/obegron/testtender/internal/model/types"
+	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
 )
 
 var tarSingle = []byte{
@@ -357,6 +358,67 @@ func TestStartContainerAddsActiveDeadlineSeconds(t *testing.T) {
 		if !reflect.DeepEqual(tst.ads, pod.Spec.ActiveDeadlineSeconds) {
 			t.Errorf("failed test %d - expected %s but got %s", i, ptrToString(tst.ads), ptrToString(pod.Spec.ActiveDeadlineSeconds))
 		}
+	}
+}
+
+func TestStartContainerAddsAllowedSecretEnvironmentReference(t *testing.T) {
+	policy, err := secretpolicy.New([]string{"integration-database"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	podTemplate := &corev1.Pod{Status: corev1.PodStatus{
+		ContainerStatuses: []corev1.ContainerStatus{{
+			Name:  "main",
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"}},
+		}},
+	}}
+	kub := &instance{
+		namespace:    "default",
+		cli:          fake.NewSimpleClientset(),
+		podTemplate:  podTemplate,
+		secretPolicy: policy,
+		timeOut:      10,
+	}
+	container := &types.Container{
+		ID:      "secret-reference",
+		ShortID: "abc123",
+		Name:    "database",
+		Labels: map[string]string{
+			secretpolicy.EnvLabelPrefix + "DB_PASSWORD":  "integration-database:password",
+			secretpolicy.FileLabelPrefix + "db_password": "integration-database:password",
+		},
+	}
+
+	state, err := kub.StartContainer(container)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != DeployCompleted {
+		t.Fatalf("state = %d, want DeployCompleted", state)
+	}
+
+	object, err := kub.cli.(*fake.Clientset).Tracker().Get(
+		schema.GroupVersionResource{Version: "v1", Resource: "pods"},
+		"default",
+		"testtender-database-abc123",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := object.(*corev1.Pod).Spec.Containers[0].Env
+	if len(env) != 1 || env[0].ValueFrom == nil || env[0].ValueFrom.SecretKeyRef == nil {
+		t.Fatalf("unexpected environment: %#v", env)
+	}
+	if env[0].Name != "DB_PASSWORD" || env[0].ValueFrom.SecretKeyRef.Name != "integration-database" || env[0].ValueFrom.SecretKeyRef.Key != "password" {
+		t.Fatalf("unexpected Secret reference: %#v", env[0])
+	}
+	pod := object.(*corev1.Pod)
+	if len(pod.Spec.Volumes) != 1 || pod.Spec.Volumes[0].Name != secretpolicy.VolumeName || pod.Spec.Volumes[0].Projected == nil {
+		t.Fatalf("unexpected Secret volume: %#v", pod.Spec.Volumes)
+	}
+	mounts := pod.Spec.Containers[0].VolumeMounts
+	if len(mounts) != 1 || mounts[0].MountPath != secretpolicy.MountPath || !mounts[0].ReadOnly {
+		t.Fatalf("unexpected Secret mount: %#v", mounts)
 	}
 }
 

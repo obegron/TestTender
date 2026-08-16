@@ -12,6 +12,7 @@ import (
 	"github.com/obegron/testtender/internal/model"
 	"github.com/obegron/testtender/internal/model/types"
 	imagepolicy "github.com/obegron/testtender/internal/policy/image"
+	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
 )
 
 const (
@@ -25,6 +26,9 @@ const (
 type Config struct {
 	// ImageResolver authorizes requested images and resolves mirror rewrites.
 	ImageResolver imagepolicy.Resolver
+	// SecretPolicy authorizes namespace-local Secret references without reading
+	// Secret objects or values.
+	SecretPolicy *secretpolicy.Policy
 	// Inspector specifies if the image inspect feature is enabled
 	Inspector bool
 	// PortForward specifies if the the services should be port-forwarded
@@ -68,12 +72,22 @@ type ContextRouter struct {
 	Backend backend.Backend
 	Events  events.Events
 	Limiter *rate.Limiter
+	// SecretPolicy validates Secret-backed environment references at container
+	// creation; the backend validates them again while constructing the Pod.
+	SecretPolicy *secretpolicy.Policy
 }
 
 // NewContextRouter will instantiate a ContextRouter object.
 func NewContextRouter(kub backend.Backend, cfg Config) (*ContextRouter, error) {
 	if cfg.ImageResolver == nil {
 		cfg.ImageResolver = imagepolicy.Passthrough()
+	}
+	if cfg.SecretPolicy == nil {
+		var err error
+		cfg.SecretPolicy, err = secretpolicy.New(nil)
+		if err != nil {
+			return nil, err
+		}
 	}
 	db, err := model.New()
 	if err != nil {
@@ -88,11 +102,12 @@ func NewContextRouter(kub backend.Backend, cfg Config) (*ContextRouter, error) {
 		pollBurst = DefaultPollBurst
 	}
 	cr := &ContextRouter{
-		Config:  cfg,
-		DB:      db,
-		Backend: kub,
-		Events:  events.New(),
-		Limiter: rate.NewLimiter(rate.Limit(pollRate), pollBurst),
+		Config:       cfg,
+		DB:           db,
+		Backend:      kub,
+		Events:       events.New(),
+		Limiter:      rate.NewLimiter(rate.Limit(pollRate), pollBurst),
+		SecretPolicy: cfg.SecretPolicy,
 	}
 	return cr, nil
 }
@@ -127,4 +142,24 @@ func ValidateContainerRequest(container *types.Container) error {
 		return errors.New("mounting /var/run/docker.sock is unsupported: TestTender runs containers only as Kubernetes Pods")
 	}
 	return nil
+}
+
+// ValidateContainerRequest enforces request boundaries that depend on the
+// configured policies before compatibility state is persisted.
+func (in *ContextRouter) ValidateContainerRequest(container *types.Container) error {
+	if err := ValidateContainerRequest(container); err != nil {
+		return err
+	}
+	return in.SecretPolicy.Validate(container.Labels, container.GetEnvVar())
+}
+
+// ContainerRequestErrorStatus maps request-policy errors to stable API status
+// codes. An allowlist rejection is authorization failure; malformed references
+// are bad client input.
+func ContainerRequestErrorStatus(err error) int {
+	var denied *secretpolicy.DeniedError
+	if errors.As(err, &denied) {
+		return http.StatusForbidden
+	}
+	return http.StatusBadRequest
 }

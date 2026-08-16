@@ -20,6 +20,7 @@ import (
 
 	"github.com/obegron/testtender/internal/config"
 	"github.com/obegron/testtender/internal/model/types"
+	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
 	"github.com/obegron/testtender/internal/util/exec"
 	"github.com/obegron/testtender/internal/util/portforward"
 	"github.com/obegron/testtender/internal/util/reverseproxy"
@@ -92,6 +93,28 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 	container.Command = tainr.Entrypoint
 	container.Args = tainr.Cmd
 	container.Env = tainr.GetEnvVar()
+	policy := in.secretPolicy
+	if policy == nil {
+		policy, _ = secretpolicy.New(nil)
+	}
+	secretEnv, err := policy.EnvVars(tainr.Labels, container.Env)
+	if err != nil {
+		return DeployFailed, err
+	}
+	container.Env = append(container.Env, secretEnv...)
+	secretVolumes, secretMounts, err := policy.Files(tainr.Labels)
+	if err != nil {
+		return DeployFailed, err
+	}
+	if len(secretVolumes) > 0 {
+		for _, volume := range pod.Spec.Volumes {
+			if volume.Name == secretpolicy.VolumeName {
+				return DeployFailed, fmt.Errorf("pod template volume name %q is reserved for Secret references", secretpolicy.VolumeName)
+			}
+		}
+		pod.Spec.Volumes = append(pod.Spec.Volumes, secretVolumes...)
+		container.VolumeMounts = append(container.VolumeMounts, secretMounts...)
+	}
 	container.Ports = in.getContainerPorts(tainr)
 	container.ImagePullPolicy = pulpol
 	container.TTY = tainr.Tty
