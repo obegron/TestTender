@@ -34,9 +34,13 @@ func handleNetworksPrune(w http.ResponseWriter, r *http.Request, store *containe
 	}
 	deleted := []string{}
 	if store != nil {
+		owner := requestOwner(r)
 		store.mu.Lock()
 		for id, n := range store.networks {
 			if id == builtInBridgeNetworkID {
+				continue
+			}
+			if !ownerMatches(n.Owner, owner) {
 				continue
 			}
 			if len(n.Containers) > 0 {

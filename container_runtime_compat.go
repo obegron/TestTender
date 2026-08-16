@@ -22,6 +22,20 @@ func applyRedisRuntimeCompat(cmdArgs []string, loopbackIP string) []string {
 	return out
 }
 
+// The official Redis entrypoint drops from root to the redis account with
+// setpriv. PRoot can make a rootless process appear to be UID 0, but setpriv's
+// subsequent setresgid syscall still fails with EPERM. Start as the image's
+// redis account instead so the entrypoint takes its already-unprivileged path.
+func applyRedisRuntimeCompatUser(rootfs, userSpec string) string {
+	if strings.TrimSpace(userSpec) != "" {
+		return userSpec
+	}
+	if _, _, ok := lookupUserByName(rootfs, "redis"); ok {
+		return "redis"
+	}
+	return userSpec
+}
+
 func hasArg(args []string, needle string) bool {
 	for _, arg := range args {
 		if arg == needle {

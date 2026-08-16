@@ -1,12 +1,14 @@
-FROM golang:1.26 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26 AS build
 ARG VERSION=dev
 ARG GIT_COMMIT=unknown
 ARG BUILD_TIME=unknown
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w -X 'main.version=${VERSION}' -X 'main.gitCommit=${GIT_COMMIT}' -X 'main.buildTime=${BUILD_TIME}'" -o /out/sidewhale .
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -ldflags="-s -w -X 'main.version=${VERSION}' -X 'main.gitCommit=${GIT_COMMIT}' -X 'main.buildTime=${BUILD_TIME}'" -o /out/sidewhale .
 
 FROM debian:trixie-slim AS proot-build
 ARG PROOT_VERSION=v5.4.0
@@ -33,12 +35,14 @@ FROM debian:trixie-slim AS runtime-deps
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     libtalloc2 \
-    && rm -rf /var/lib/apt/lists/*
+	&& rm -rf /var/lib/apt/lists/* \
+	&& mkdir -p /out \
+	&& cp --parents /usr/lib/*-linux-gnu/libtalloc.so.2 /out
 
 FROM gcr.io/distroless/cc-debian13:nonroot
 COPY --from=build /out/sidewhale /sidewhale
 COPY --from=proot-build /out/proot /usr/local/bin/proot
 COPY --from=runtime-deps /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
-COPY --from=runtime-deps /usr/lib/x86_64-linux-gnu/libtalloc.so.2 /usr/lib/x86_64-linux-gnu/
+COPY --from=runtime-deps /out/usr/lib/ /usr/lib/
 EXPOSE 23750
 ENTRYPOINT ["/sidewhale"]

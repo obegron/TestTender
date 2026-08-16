@@ -1,72 +1,65 @@
-# Sidewhale Compatibility Matrix (Host Backend)
+# Sidewhale Compatibility Matrix
 
-Last updated: 2026-02-22
+Last updated: 2026-08-16
 
-This matrix reflects what we validated in the current upstream test loop (`testcontainers-java` + Sidewhale host backend with `proot`).
+Sidewhale's product target is the Kubernetes backend. PRoot results are useful
+fallback evidence but do not establish Kubernetes compatibility.
 
-Status legend:
+Status definitions:
 
-- `Confirmed`: validated in our recent runs
-- `Partial`: works for some cases; known gaps remain
-- `Unsupported`: outside current host-backend scope
+- `Confirmed`: a pinned upstream module/test or equivalent end-to-end k3d test passed.
+- `Partial`: important paths pass, but the complete upstream module or behavior has gaps.
+- `Unverified`: host/PRoot evidence exists, but current Kubernetes evidence is insufficient.
+- `Out of scope`: intentionally excluded from the MVP.
 
-## Docker API / Behavior
+## Kubernetes Docker API Behavior
 
-| Area | Status | Notes |
+| Area | Status | Current evidence / gap |
 |---|---|---|
-| Container lifecycle (`create/start/stop/delete/inspect`) | Confirmed | Core Testcontainers path is stable. |
-| Image pull (`/images/create`) | Confirmed | Streaming progress implemented; digest/local mirror flows exercised. |
-| Logs (`/containers/{id}/logs`) | Confirmed | Non-stream and follow flows used in upstream tests. |
-| Wait/state (`/containers/{id}/wait`, running status) | Confirmed | Wait/error-state behavior exercised in core tests. |
-| File/archive copy (`/containers/{id}/archive` HEAD/GET/PUT) | Confirmed | Core file-operation coverage now stable, including copy-back from stopped containers and large-file copy paths in upstream tests. |
-| Port publishing | Confirmed | Host TCP proxy mapping used broadly across modules. |
-| Listener/bind address compatibility | Partial | Strongly improved for single-container services (Kafka listener flow and host-exposed-port forwarding now passing in proot and k8s), but image-specific bind assumptions can still require compatibility handling. |
-| Networks API surface | Partial | Basic endpoints exist, but no real Docker network namespace semantics. |
-| Cross-container DNS/service discovery | Unsupported | No embedded DNS; name-based cluster discovery is a known gap. |
+| Ping, version, info | Confirmed | Used by Java Testcontainers and all in-cluster jobs. |
+| Container create/start/inspect/stop/delete | Confirmed | Repeated PostgreSQL/Kafka/MockServer/LDAP and custom k3d flows. |
+| Image pull and inspect | Confirmed | Registry, digest, mirror, and local-import paths exercised. |
+| Port publishing | Confirmed | Dynamic TCP proxying works through the headless Sidewhale Service. UDP is rejected. |
+| Logs and follow | Confirmed | Kafka lifecycle and log-follow integration jobs pass. |
+| Wait and exit state | Confirmed | Core lifecycle and failed/completed state paths exercised. |
+| Archive HEAD/GET/PUT | Partial | Upload/copy paths and Testcontainers startup-script flow pass; broader upstream coverage remains desirable. |
+| Exec | Partial | Non-interactive exec and exit status work; complete stdin/TTY/hijack parity is not implemented. |
+| Networks API | Partial | API/state/aliases exist, but they do not provide dynamic Docker-network DNS semantics. |
+| TLS and client authentication | Confirmed | Java Testcontainers Redis/PostgreSQL passed through strict mTLS in k3d, and an independent client certificate without access was rejected (2026-08-16). |
+| Per-client resource ownership | Partial | API resources and peer discovery are certificate-scoped. Worker Pods receive opaque owner labels and same-owner ingress policies; CNI enforcement, shared images/metrics, and egress remain deployment concerns. |
+| Cross-container alias DNS | Unverified | Static host aliases help known peers; peers added after Pod creation are not discoverable reliably. |
+| Volumes and bind mounts | Out of scope | Host paths are deliberately not exposed. tmpfs/emptyDir and archive copy cover the MVP. |
+| Image build / ImageFromDockerfile | Out of scope | No Docker build API in the MVP. |
+| Docker Compose | Out of scope | Requires a substantially larger networking and orchestration surface. |
 
-## Testcontainers Java Modules
+## Kubernetes Testcontainers Modules
 
-| Module / Test Area | Status | Notes |
+| Module / area | Status | Current evidence / next step |
 |---|---|---|
-| Core (`DockerClientFactoryTest`, `ContainerStateTest`, `ImagePullTest`, logs/wait-focused tests) | Confirmed | Core correctness loop repeatedly exercised. |
-| PostgreSQL | Confirmed | Project acceptance target; repeatedly validated. |
-| Redis (module + smoke variants) | Confirmed | Single-container and repeated smoke runs validated. |
-| MySQL | Confirmed | Module tests executed successfully in host mode. |
-| MariaDB | Confirmed | Module tests executed successfully in host mode. |
-| MSSQL Server | Confirmed | Module tests executed successfully; marked useful target runtime. |
-| Vault | Confirmed | Passed after mirroring required images. |
-| Solr | Confirmed | Module tests executed successfully in recent loop. |
-| JUnit Jupiter integration tests (selected) | Confirmed | Selected inheritance/restart tests validated. |
-| MockServer | Confirmed | `:testcontainers-mockserver:test` passed in k8s upstream loop (`MockServerContainerTest`: standard, TLS, mTLS, and wait-strategy paths). |
-| Nginx module | Partial | Works only with Sidewhale nginx compat handling; privileged-port behavior is image-sensitive. |
-| LDAP (LLDAP) | Confirmed | `:testcontainers-ldap:test` passed in k8s upstream loop (`LLdapContainerTest`: default bind, URL-based bind, custom base DN, custom password). |
-| Kafka (single container) | Confirmed | Full `:testcontainers-kafka:test` passed on proot with `--rerun-tasks` (including `testWithHostExposedPort` and `testWithHostExposedPortAndExternalNetwork`) after proot-specific SSH helper compatibility handling. |
-| Kafka cluster examples | Unsupported | Requires container-to-container name resolution/network behavior not provided by host backend. |
-| Cassandra | Partial | `:testcontainers-cassandra:test` runs many tests successfully, but startup/readiness remains flaky in host mode. Recent failures include `Timed out waiting for Cassandra to be accessible for query execution` and `NoHostAvailableException`/closed channel in `testConfigurationOverride`. |
-| Oracle Free | Supported (K8s) | Full support on K8s backend with automated memory (4Gi) and startup probe (healthcheck.sh) injection. Still unsupported on host backend due to `proot` syscall constraints. |
-| DB2 | Unsupported | Pod-level startup is possible, but first-boot engine/database initialization is too slow/heavy for practical ephemeral Testcontainers usage in the current runtime model. |
-| Compose-based tests | Unsupported | Compose/network feature set is intentionally out of scope. |
-| ImageFromDockerfile/build flows | Unsupported | Build API not in MVP scope. |
+| Core client behavior | Partial | ContainerState-style port behavior and custom lifecycle flows pass; run the complete pinned k8s core suite regularly. |
+| PostgreSQL | Confirmed | Java `PostgreSQLContainer` smoke passed in k3d through the headless Service and completed a real SQL query. |
+| Redis | Confirmed | Java `GenericContainer` smoke passed in k3d through the headless Service and its mapped-port wait strategy. |
+| MySQL / MariaDB | Unverified | Host module evidence exists; k8s module evidence needs refreshing. |
+| MockServer | Confirmed | Upstream k8s module covered standard, TLS, mTLS, and wait-strategy paths. |
+| LDAP (LLDAP) | Confirmed | Upstream k8s module covered default/custom bind and base-DN paths. |
+| Kafka (single node) | Partial | Listener, log-stream, and upstream-shaped k3d flows pass; full pinned k8s module remains the acceptance target. |
+| Kafka clusters | Unverified | Blocked on reliable per-network alias DNS and isolation. |
+| Oracle Free | Confirmed | K8s-specific memory, user, and startup-probe handling has passed. |
+| Cassandra | Unverified | PRoot runs were flaky; do not add more compatibility code until a k8s module run identifies real gaps. |
+| MSSQL, Solr, Vault | Unverified | Existing confirmation is primarily host-backend evidence. |
+| DB2 | Out of scope | Startup cost and resource use are poor fits for the current ephemeral model. |
 
-## Practical Guidance
+## Next MVP Acceptance Targets
 
-Best fit today:
+1. Confirm MySQL/MariaDB, MongoDB, RabbitMQ, and MockServer on pinned k8s runs.
+2. Implement two-container communication through a Testcontainers network alias.
+3. Add an automated CNI-capable cross-owner worker deny test before treating one instance as a multi-tenant boundary.
+4. Complete non-interactive exec semantics before expanding image-specific compatibility code.
+5. Record the Testcontainers version, image digest/tag, test task, security profile, and date for every `Confirmed` row.
 
-- single-container dependency services used by application tests
-- JDBC/Redis-like modules that only need lifecycle, ports, logs, and inspect
-- mirrored-image environments where external pull pressure is controlled
+## PRoot Fallback
 
-Known non-fit today:
-
-- distributed cluster tests that depend on Docker DNS/network semantics
-- modules/images requiring privileged internal bind behavior without adaptation
-- heavy runtime/kernel-sensitive images (for example Oracle/DB2 class)
-
-## Scope Statement
-
-Current Sidewhale target is:
-
-- **High correctness for host-backend Testcontainers essentials**
-- **Not** full Docker runtime/network parity
-
-If networking parity becomes a hard requirement, treat it as a separate major milestone rather than incremental tweaks.
+The host backend remains useful where Docker and cgroups are unavailable. It has
+strong single-container coverage across several modules, but it is not a security
+boundary or the basis for Kubernetes compatibility claims. Image-specific PRoot
+rewrites should stay isolated from the k8s execution path.

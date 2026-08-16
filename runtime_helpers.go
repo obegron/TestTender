@@ -33,12 +33,12 @@ func listenUnixSocket(socketPath string) (net.Listener, error) {
 		return nil, err
 	}
 	if info, err := os.Lstat(socketPath); err == nil {
-		if info.Mode().Type() == fs.ModeSocket || info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		if info.Mode().Type() == fs.ModeSocket {
 			if rmErr := os.Remove(socketPath); rmErr != nil {
 				return nil, rmErr
 			}
 		} else {
-			return nil, fmt.Errorf("path exists and is not a socket: %s", socketPath)
+			return nil, fmt.Errorf("refusing to replace non-socket path: %s", socketPath)
 		}
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return nil, err
@@ -52,6 +52,39 @@ func listenUnixSocket(socketPath string) (net.Listener, error) {
 		return nil, chmodErr
 	}
 	return ln, nil
+}
+
+func requestBodyLimitMiddleware(controlLimit, archiveLimit int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			limit := controlLimit
+			path := r.URL.Path
+			if rewritten, ok := rewriteVersionedPath(path); ok {
+				path = rewritten
+			}
+			if isArchiveUploadPath(r.Method, path) {
+				limit = archiveLimit
+			}
+			if limit <= 0 || r.Body == nil {
+				next.ServeHTTP(w, r)
+				return
+			}
+			if r.ContentLength > limit {
+				writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+				return
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+func isArchiveUploadPath(method, requestPath string) bool {
+	if method != http.MethodPut {
+		return false
+	}
+	parts := strings.Split(strings.TrimPrefix(requestPath, "/containers/"), "/")
+	return strings.HasPrefix(requestPath, "/containers/") && len(parts) == 2 && parts[0] != "" && parts[1] == "archive"
 }
 
 func timeoutMiddleware(next http.Handler) http.Handler {

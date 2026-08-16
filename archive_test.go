@@ -101,3 +101,26 @@ func TestUntarToDirSkipsTraversalEntries(t *testing.T) {
 		t.Fatalf("extracted content = %q, want %q", string(content), "good")
 	}
 }
+
+func TestUntarToDirAllowsDoubleDotWithinFilename(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	content := "valid"
+	if err := tw.WriteHeader(&tar.Header{Name: "config..json", Mode: 0o644, Size: int64(len(content))}); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if _, err := io.WriteString(tw, content); err != nil {
+		t.Fatalf("write body: %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar: %v", err)
+	}
+	dst := t.TempDir()
+	if _, err := untarToDir(bytes.NewReader(buf.Bytes()), dst); err != nil {
+		t.Fatalf("untarToDir: %v", err)
+	}
+	got, err := os.ReadFile(filepath.Join(dst, "config..json"))
+	if err != nil || string(got) != content {
+		t.Fatalf("extracted file = %q, err=%v", got, err)
+	}
+}

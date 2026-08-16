@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"io"
 	"log"
@@ -26,8 +25,7 @@ func handleExecCreate(w http.ResponseWriter, r *http.Request, store *containerSt
 		return
 	}
 	var req execCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeJSONRequest(w, r, &req, true) {
 		return
 	}
 	if len(req.Cmd) == 0 {
@@ -41,6 +39,7 @@ func handleExecCreate(w http.ResponseWriter, r *http.Request, store *containerSt
 	}
 	inst := &ExecInstance{
 		ID:          execID,
+		Owner:       canonicalOwner(c.Owner),
 		ContainerID: c.ID,
 		Cmd:         append([]string{}, req.Cmd...),
 		User:        strings.TrimSpace(req.User),

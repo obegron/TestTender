@@ -1,8 +1,12 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,6 +63,61 @@ func TestResolveUnixSocketPath(t *testing.T) {
 		if got := resolveUnixSocketPath(tt.in, stateDir); got != tt.want {
 			t.Fatalf("resolveUnixSocketPath(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestListenUnixSocketRefusesRegularFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "docker.sock")
+	if err := os.WriteFile(path, []byte("keep me"), 0o600); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+	if _, err := listenUnixSocket(path); err == nil {
+		t.Fatal("listenUnixSocket() should reject a regular file")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read sentinel: %v", err)
+	}
+	if string(got) != "keep me" {
+		t.Fatalf("sentinel content = %q", got)
+	}
+}
+
+func TestRequestBodyLimitMiddleware(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	})
+	handler := requestBodyLimitMiddleware(4, 8)(next)
+
+	tooLarge := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader("12345"))
+	tooLargeResult := httptest.NewRecorder()
+	handler.ServeHTTP(tooLargeResult, tooLarge)
+	if tooLargeResult.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("control status = %d, want %d", tooLargeResult.Code, http.StatusRequestEntityTooLarge)
+	}
+
+	archive := httptest.NewRequest(http.MethodPut, "/v1.41/containers/abc/archive", strings.NewReader("12345678"))
+	archiveResult := httptest.NewRecorder()
+	handler.ServeHTTP(archiveResult, archive)
+	if archiveResult.Code != http.StatusOK {
+		t.Fatalf("archive status = %d, want %d", archiveResult.Code, http.StatusOK)
+	}
+}
+
+func TestChunkedJSONBodyLimitReturnsEntityTooLarge(t *testing.T) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var dst map[string]string
+		_ = decodeJSONRequest(w, r, &dst, false)
+	})
+	handler := requestBodyLimitMiddleware(4, 8)(next)
+	req := httptest.NewRequest(http.MethodPost, "/containers/create", strings.NewReader(`{"key":"value"}`))
+	req.ContentLength = -1
+	result := httptest.NewRecorder()
+	handler.ServeHTTP(result, req)
+	if result.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want %d", result.Code, http.StatusRequestEntityTooLarge)
 	}
 }
 

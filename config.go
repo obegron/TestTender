@@ -2,14 +2,24 @@ package main
 
 import (
 	"flag"
+	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
+)
+
+const (
+	defaultMaxRequestBodyBytes = int64(4 * 1024 * 1024)
+	defaultMaxArchiveBytes     = int64(512 * 1024 * 1024)
 )
 
 type appConfig struct {
 	listenAddr           string
 	stateDir             string
 	unixSocketPath       string
+	tlsCertFile          string
+	tlsKeyFile           string
+	tlsClientCAFile      string
 	runtimeBackend       string
 	k8sRuntimeNamespace  string
 	k8sImagePullSecrets  []string
@@ -19,12 +29,17 @@ type appConfig struct {
 	trustInsecure        bool
 	enableImageMutations bool
 	enableArchiveUpload  bool
+	maxRequestBodyBytes  int64
+	maxArchiveBytes      int64
 	limits               runtimeLimits
 }
 
 func initConfig() (appConfig, bool, error) {
 	listenAddr := flag.String("listen", ":23750", "listen address")
 	listenUnix := flag.String("listen-unix", "", "unix socket path (empty = <state-dir>/docker.sock, '-' disables)")
+	tlsCertFile := flag.String("tls-cert", "", "TLS server certificate PEM file")
+	tlsKeyFile := flag.String("tls-key", "", "TLS server private key PEM file")
+	tlsClientCAFile := flag.String("tls-client-ca", "", "client CA PEM file; enables strict mutual TLS")
 	stateDir := flag.String("state-dir", "/tmp/sidewhale", "state directory")
 	runtimeBackend := flag.String("runtime-backend", runtimeBackendHost, "runtime backend: host|k8s")
 	k8sRuntimeNamespace := flag.String("k8s-runtime-namespace", "", "namespace for k8s runtime worker pods (default: sidewhale pod namespace)")
@@ -42,6 +57,8 @@ func initConfig() (appConfig, bool, error) {
 	trustInsecure := flag.Bool("trust-insecure", false, "skip TLS certificate verification for image pulls")
 	enableImageMutations := flag.Bool("enable-image-mutations", true, "enable image mutation APIs (tag/push/delete)")
 	enableArchiveUpload := flag.Bool("enable-archive-upload", true, "enable PUT /containers/{id}/archive")
+	maxRequestBodyBytes := flag.Int64("max-request-body-bytes", defaultMaxRequestBodyBytes, "maximum control-plane request body size (0 = unlimited)")
+	maxArchiveBytes := flag.Int64("max-archive-bytes", defaultMaxArchiveBytes, "maximum archive upload size (0 = unlimited)")
 	printVersion := flag.Bool("version", false, "print version and exit")
 	flag.Parse()
 
@@ -66,6 +83,9 @@ func initConfig() (appConfig, bool, error) {
 		listenAddr:           *listenAddr,
 		stateDir:             *stateDir,
 		unixSocketPath:       resolveUnixSocketPath(*listenUnix, *stateDir),
+		tlsCertFile:          strings.TrimSpace(*tlsCertFile),
+		tlsKeyFile:           strings.TrimSpace(*tlsKeyFile),
+		tlsClientCAFile:      strings.TrimSpace(*tlsClientCAFile),
 		runtimeBackend:       backend,
 		k8sRuntimeNamespace:  strings.TrimSpace(*k8sRuntimeNamespace),
 		k8sImagePullSecrets:  splitCommaList(*k8sImagePullSecrets),
@@ -75,6 +95,8 @@ func initConfig() (appConfig, bool, error) {
 		trustInsecure:        *trustInsecure,
 		enableImageMutations: *enableImageMutations,
 		enableArchiveUpload:  *enableArchiveUpload,
+		maxRequestBodyBytes:  *maxRequestBodyBytes,
+		maxArchiveBytes:      *maxArchiveBytes,
 		limits: runtimeLimits{
 			maxConcurrent: *maxConcurrent,
 			maxRuntime:    *maxRuntime,
@@ -83,7 +105,53 @@ func initConfig() (appConfig, bool, error) {
 			maxDiskBytes:  *maxDiskBytes,
 		},
 	}
+	if err := validateAppConfig(cfg); err != nil {
+		return appConfig{}, false, err
+	}
 	return cfg, false, nil
+}
+
+func validateAppConfig(cfg appConfig) error {
+	stateDir := strings.TrimSpace(cfg.stateDir)
+	if stateDir == "" {
+		return fmt.Errorf("state directory must not be empty")
+	}
+	absStateDir, err := filepath.Abs(stateDir)
+	if err != nil {
+		return fmt.Errorf("resolve state directory: %w", err)
+	}
+	if filepath.Clean(absStateDir) == string(filepath.Separator) {
+		return fmt.Errorf("state directory must not be the filesystem root")
+	}
+	if cfg.limits.maxConcurrent < 0 {
+		return fmt.Errorf("max-concurrent must be non-negative")
+	}
+	if cfg.limits.maxRuntime < 0 {
+		return fmt.Errorf("max-runtime must be non-negative")
+	}
+	if cfg.limits.maxLogBytes < 0 || cfg.limits.maxMemBytes < 0 || cfg.limits.maxDiskBytes < 0 {
+		return fmt.Errorf("byte limits must be non-negative")
+	}
+	if cfg.maxRequestBodyBytes < 0 {
+		return fmt.Errorf("max-request-body-bytes must be non-negative")
+	}
+	if cfg.maxArchiveBytes < 0 {
+		return fmt.Errorf("max-archive-bytes must be non-negative")
+	}
+	certSet := strings.TrimSpace(cfg.tlsCertFile) != ""
+	keySet := strings.TrimSpace(cfg.tlsKeyFile) != ""
+	if certSet != keySet {
+		return fmt.Errorf("tls-cert and tls-key must be configured together")
+	}
+	if strings.TrimSpace(cfg.tlsClientCAFile) != "" {
+		if !certSet {
+			return fmt.Errorf("tls-client-ca requires tls-cert and tls-key")
+		}
+		if strings.TrimSpace(cfg.unixSocketPath) != "" {
+			return fmt.Errorf("tls-client-ca requires the Unix listener to be disabled")
+		}
+	}
+	return nil
 }
 
 func splitCommaList(raw string) []string {

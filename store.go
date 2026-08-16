@@ -44,6 +44,20 @@ func (s *containerStore) loadAll() error {
 		if err := json.Unmarshal(data, &c); err != nil {
 			continue
 		}
+		if !isSafeStateID(c.ID) || entry.Name() != c.ID+".json" {
+			continue
+		}
+		containerDir := filepath.Join(s.stateDir, "containers", c.ID)
+		if ok, _ := isPathWithinBase(containerDir, c.Rootfs); !ok {
+			continue
+		}
+		rootfsInfo, err := os.Lstat(c.Rootfs)
+		if err != nil || !rootfsInfo.IsDir() {
+			continue
+		}
+		if err := isDirSafe(containerDir, c.Rootfs); err != nil {
+			continue
+		}
 		s.containers[c.ID] = &c
 	}
 	return s.loadNetworks()
@@ -54,34 +68,109 @@ func (s *containerStore) containerPath(id string) string {
 }
 
 func (s *containerStore) saveContainer(c *Container) error {
+	if c == nil || !isSafeStateID(c.ID) {
+		return fmt.Errorf("invalid container id")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.containers[c.ID] = c
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.containerPath(c.ID), data, 0o644)
+	if err := atomicWriteFile(s.containerPath(c.ID), data, 0o600); err != nil {
+		return err
+	}
+	s.containers[c.ID] = c
+	return nil
+}
+
+func isSafeStateID(id string) bool {
+	if id == "" || id != strings.TrimSpace(id) || id == "." || id == ".." || filepath.Base(id) != id {
+		return false
+	}
+	for _, ch := range id {
+		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func (s *containerStore) findContainer(id string) (*Container, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.findContainerLocked(id)
+}
+
+func (s *containerStore) findContainerForOwner(id, owner string) (*Container, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, ok := s.findContainerLocked(id)
+	if !ok || c == nil || !ownerMatches(c.Owner, owner) {
+		return nil, false
+	}
+	return c, true
+}
+
+func (s *containerStore) findContainerLocked(id string) (*Container, bool) {
 	id = normalizeContainerName(id)
+	if id == "" {
+		return nil, false
+	}
 	if c, ok := s.containers[id]; ok {
 		return c, true
 	}
+	var nameMatch *Container
 	for _, c := range s.containers {
 		if c.Name != "" && normalizeContainerName(c.Name) == id {
-			return c, true
+			if nameMatch != nil && nameMatch.ID != c.ID {
+				return nil, false
+			}
+			nameMatch = c
 		}
 	}
+	if nameMatch != nil {
+		return nameMatch, true
+	}
+	var prefixMatch *Container
 	for containerID, c := range s.containers {
 		if strings.HasPrefix(containerID, id) {
-			return c, true
+			if prefixMatch != nil && prefixMatch.ID != c.ID {
+				return nil, false
+			}
+			prefixMatch = c
 		}
 	}
-	return nil, false
+	return prefixMatch, prefixMatch != nil
+}
+
+// beginContainerStart serializes starts for a container. The returned already
+// flag is true when the container is running or another start is in progress.
+func (s *containerStore) beginContainerStart(ref string) (c *Container, found, already bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c, found = s.findContainerLocked(ref)
+	if !found || c == nil {
+		return nil, false, false
+	}
+	if c.Running {
+		return c, true, true
+	}
+	if s.starting == nil {
+		s.starting = make(map[string]struct{})
+	}
+	if _, ok := s.starting[c.ID]; ok {
+		return c, true, true
+	}
+	s.starting[c.ID] = struct{}{}
+	return c, true, false
+}
+
+func (s *containerStore) endContainerStart(id string) {
+	s.mu.Lock()
+	delete(s.starting, id)
+	s.mu.Unlock()
 }
 
 func (s *containerStore) markStopped(id string) {
@@ -107,18 +196,28 @@ func (s *containerStore) markStoppedWithExit(id string, exitCode *int, finishedA
 }
 
 func (s *containerStore) saveLocked(c *Container) error {
+	if c == nil || !isSafeStateID(c.ID) {
+		return fmt.Errorf("invalid container id")
+	}
 	data, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.containerPath(c.ID), data, 0o644)
+	return atomicWriteFile(s.containerPath(c.ID), data, 0o600)
 }
 
 func (s *containerStore) listContainers() []map[string]interface{} {
+	return s.listContainersForOwner("")
+}
+
+func (s *containerStore) listContainersForOwner(owner string) []map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]map[string]interface{}, 0, len(s.containers))
 	for _, c := range s.containers {
+		if owner != "" && !ownerMatches(c.Owner, owner) {
+			continue
+		}
 		out = append(out, map[string]interface{}{
 			"Id":      c.ID,
 			"Image":   c.Image,
@@ -134,13 +233,34 @@ func (s *containerStore) listContainers() []map[string]interface{} {
 }
 
 func (s *containerStore) listContainerIDs() []string {
+	return s.listContainerIDsForOwner("")
+}
+
+func (s *containerStore) listContainerIDsForOwner(owner string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make([]string, 0, len(s.containers))
-	for id := range s.containers {
+	for id, c := range s.containers {
+		if owner != "" && !ownerMatches(c.Owner, owner) {
+			continue
+		}
 		out = append(out, id)
 	}
 	return out
+}
+
+func (s *containerStore) hasK8sContainersForOwner(owner, namespace string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, c := range s.containers {
+		if c == nil || strings.TrimSpace(c.K8sPodName) == "" || !ownerMatches(c.Owner, owner) {
+			continue
+		}
+		if namespace == "" || strings.TrimSpace(c.K8sNamespace) == "" || c.K8sNamespace == namespace {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *containerStore) runningCount() int {

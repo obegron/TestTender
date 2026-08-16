@@ -108,9 +108,10 @@ func newInClusterK8sClient() (*k8sClient, error) {
 	if !pool.AppendCertsFromPEM(caBytes) {
 		return nil, fmt.Errorf("failed to parse serviceaccount CA")
 	}
-	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{RootCAs: pool},
-	}
+	tr := http.DefaultTransport.(*http.Transport).Clone()
+	tr.Proxy = nil
+	tr.TLSClientConfig = &tls.Config{RootCAs: pool}
+	tr.ForceAttemptHTTP2 = true
 	return &k8sClient{
 		baseURL:   baseURL,
 		token:     strings.TrimSpace(string(tokenBytes)),
@@ -127,7 +128,11 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 	if image == "" {
 		return "", fmt.Errorf("missing image")
 	}
+	if err := k.ensureOwnerNetworkPolicy(ctx, c.Owner); err != nil {
+		return "", fmt.Errorf("ensure owner network policy: %w", err)
+	}
 	podName := "sidewhale-" + c.ID
+	ownerID := ownerK8sID(c.Owner)
 	entrypoint, args := containerEntrypointAndArgs(c)
 	env := k8sEnvFromContainerEnv(c.Env)
 	containerSpec := map[string]interface{}{
@@ -135,6 +140,9 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 		"image":           image,
 		"imagePullPolicy": "IfNotPresent",
 		"env":             env,
+		"securityContext": map[string]interface{}{
+			"allowPrivilegeEscalation": false,
+		},
 		"volumeMounts": []map[string]interface{}{
 			{
 				"name":      "dshm",
@@ -150,10 +158,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 			"requests": map[string]string{"memory": "4Gi"},
 			"limits":   map[string]string{"memory": "4Gi"},
 		}
-		containerSpec["securityContext"] = map[string]interface{}{
-			"runAsUser":                54321,
-			"allowPrivilegeEscalation": false,
-		}
+		containerSpec["securityContext"].(map[string]interface{})["runAsUser"] = 54321
 		containerSpec["startupProbe"] = map[string]interface{}{
 			"exec": map[string]interface{}{
 				"command": []string{"/opt/oracle/healthcheck.sh"},
@@ -185,8 +190,15 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 	}
 
 	podSpec := map[string]interface{}{
-		"restartPolicy": "Never",
-		"containers":    []map[string]interface{}{containerSpec},
+		"restartPolicy":                "Never",
+		"automountServiceAccountToken": false,
+		"enableServiceLinks":           false,
+		"securityContext": map[string]interface{}{
+			"seccompProfile": map[string]interface{}{
+				"type": "RuntimeDefault",
+			},
+		},
+		"containers": []map[string]interface{}{containerSpec},
 		"volumes": []map[string]interface{}{
 			{
 				"name": "dshm",
@@ -200,9 +212,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 	appendTmpfsVolumes(c, containerSpec, podSpec)
 	appendWritableArchiveVolumes(c, containerSpec, podSpec)
 	if isOracle {
-		podSpec["securityContext"] = map[string]interface{}{
-			"fsGroup": 54321,
-		}
+		podSpec["securityContext"].(map[string]interface{})["fsGroup"] = 54321
 	}
 
 	pod := map[string]interface{}{
@@ -215,6 +225,7 @@ func (k *k8sClient) createPod(ctx context.Context, c *Container, hostAliasMap ma
 				"app.kubernetes.io/name": "sidewhale-workload",
 				"sidewhale.container-id": c.ID,
 				"sidewhale.managed":      "true",
+				"sidewhale.owner-id":     ownerID,
 			},
 		},
 		"spec": podSpec,
@@ -405,6 +416,10 @@ func (k *k8sClient) openPodLogs(ctx context.Context, namespace, name string, fol
 }
 
 func (k *k8sClient) doJSON(ctx context.Context, method, path string, body []byte) (*http.Response, error) {
+	return k.doRequest(ctx, method, path, body, "application/json")
+}
+
+func (k *k8sClient) doRequest(ctx context.Context, method, path string, body []byte, contentType string) (*http.Response, error) {
 	u := strings.TrimRight(k.baseURL, "/") + path
 	var reader io.Reader
 	if len(body) > 0 {
@@ -416,7 +431,7 @@ func (k *k8sClient) doJSON(ctx context.Context, method, path string, body []byte
 	}
 	req.Header.Set("Authorization", "Bearer "+k.token)
 	if len(body) > 0 {
-		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Content-Type", contentType)
 		req.Header.Set("Content-Length", strconv.Itoa(len(body)))
 	}
 	return k.http.Do(req)

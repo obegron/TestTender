@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -147,7 +148,7 @@ func handleImageInspect(w http.ResponseWriter, r *http.Request, stateDir string,
 		"Size":         meta.ContentSize,
 		"VirtualSize":  meta.DiskUsage,
 		"Os":           "linux",
-		"Architecture": "amd64",
+		"Architecture": runtime.GOARCH,
 		"ContainerConfig": map[string]interface{}{
 			"Env": meta.Env,
 			"Cmd": meta.Cmd,
@@ -234,7 +235,7 @@ func handleImageTag(w http.ResponseWriter, r *http.Request, stateDir string, mir
 		_ = os.RemoveAll(aliasDir)
 		writeError(w, http.StatusInternalServerError, "image tag failed")
 		return
-	} else if err := os.WriteFile(filepath.Join(aliasDir, "image.json"), data, 0o644); err != nil {
+	} else if err := atomicWriteFile(filepath.Join(aliasDir, "image.json"), data, 0o600); err != nil {
 		_ = os.RemoveAll(aliasDir)
 		writeError(w, http.StatusInternalServerError, "image tag failed")
 		return

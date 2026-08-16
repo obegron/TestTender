@@ -24,12 +24,15 @@ Current focus:
 - Basic Testcontainers lifecycle (`create`, `start`, `inspect`, `logs`, `stop`, `delete`)
 - Unix socket listener (default: `<state-dir>/docker.sock`) for in-container Docker clients
 - Image pulling and rootfs extraction
-- Port publishing through TCP proxying
+- Port publishing through TCP proxying (the k8s manifest uses a headless Service so mapped ports share the API hostname)
 - Health and readiness probes (`/healthz`, `/readyz`)
+- Optional Docker-compatible TLS/mTLS with certificate-scoped container, network, and exec ownership
+- Per-owner worker Pod labels and generated ingress NetworkPolicies for same-owner communication
 - In-cluster sidecar run in k3d for PostgreSQL test (`DatabaseTest`) passed
 
 ## Known Gaps / Limitations
 
+- mTLS isolates Docker API resources and generated NetworkPolicies isolate worker ingress by owner when the CNI enforces them, but images and aggregate metrics remain shared
 - No registry auth management beyond pass-through headers from clients
 - Insecure registry configuration is not implemented as a runtime flag yet
 - Oracle image currently fails under `host` backend (proot) due missing syscall behavior; fully supported under `k8s` backend with automatic resource/probe injection.
@@ -91,8 +94,12 @@ Runtime backend flag:
 - `--k8s-runtime-namespace=<ns>` (optional worker Pod namespace override for k8s backend)
 - `--k8s-image-pull-secrets=<name1,name2>` (optional imagePullSecrets for k8s worker Pods)
 - `--k8s-cleanup-orphans=true|false` (default `true`, deletes labeled worker Pods not present in persisted state)
+- `--max-request-body-bytes=<bytes>` (default `4194304`, set `0` for unlimited control requests)
+- `--max-archive-bytes=<bytes>` (default `536870912`, set `0` for unlimited archive uploads)
+- `--tls-cert=<path>` and `--tls-key=<path>` enable TLS on the TCP listener
+- `--tls-client-ca=<path>` requires a verified client certificate and enables certificate-scoped ownership; `--listen-unix=-` is required so plaintext Unix access cannot bypass it
 
-Then point Testcontainers (or any Docker API client) to:
+For the host backend, point Testcontainers (or any Docker API client) to:
 
 ```bash
 DOCKER_HOST=tcp://127.0.0.1:23750
@@ -100,6 +107,25 @@ DOCKER_HOST=tcp://127.0.0.1:23750
 # Ryuk/inner clients can use:
 # DOCKER_HOST=unix:///var/run/docker.sock
 ```
+
+For the k8s backend, label the client Pod with `sidewhale.io/client=true` and use:
+
+```bash
+DOCKER_HOST=tcp://sidewhale.sidewhale-system.svc.cluster.local:23750
+```
+
+For the optional mTLS profile, also set the standard Docker variables. The
+certificate directory must contain `ca.pem`, `cert.pem`, and `key.pem`:
+
+```bash
+DOCKER_HOST=tcp://sidewhale.sidewhale-system.svc.cluster.local:23750
+DOCKER_TLS_VERIFY=1
+DOCKER_CERT_PATH=/var/run/sidewhale-client-tls
+```
+
+See `docs/deployment-profiles.md` for certificate requirements and rollout
+commands. A client identity is derived from its certificate public key. Keep
+the key across certificate renewal, or delete its resources before rotating it.
 
 ## Proxy + TLS Interception
 
@@ -138,6 +164,29 @@ make integration-test
 
 By default this target sets `TESTCONTAINERS_RYUK_DISABLED=true`. Override if needed.
 
+Run the same Redis and PostgreSQL Java tests as a labeled in-cluster client
+through the documented headless Service endpoint:
+
+```bash
+make integration-test-java-smoke-k8s-image
+make integration-test-java-smoke-k8s
+```
+
+The first target builds and imports the reusable Maven runner image into the
+configured k3d cluster. The second target creates a fail-fast Kubernetes Job.
+
+Against an mTLS-patched deployment, run the same suite with a client Secret and
+then prove a second certificate cannot list or inspect its resources:
+
+```bash
+make integration-test-java-smoke-k8s \
+  K8S_SIDEWHALE_TLS_SECRET=sidewhale-client-a-tls
+make integration-test-mtls-k8s
+```
+
+`it/mtls-smoke/generate-certs.sh` creates short-lived integration certificates;
+use your existing PKI or certificate controller for real deployments.
+
 ## Upstream Testcontainers In-Cluster Runner
 
 To avoid local `kubectl port-forward` instability, you can run upstream Gradle tests entirely inside Kubernetes.
@@ -174,6 +223,11 @@ Delete job:
 make integration-test-upstream-k8s-clean
 ```
 
+## Development
+
+Run the unit tests with `make test`. Run formatting validation, `go vet`, unit tests,
+and the race detector with `make check`.
+
 ## Compatibility Matrix
 
 For current host-backend compatibility status across Testcontainers modules, see:
@@ -186,4 +240,5 @@ For current host-backend compatibility status across Testcontainers modules, see
 - `docs/deployment-profiles.md`
 - `deploy/sidewhale-host-sidecar.yaml`
 - `deploy/sidewhale-k8s-runtime.yaml`
+- `deploy/sidewhale-k8s-runtime-mtls-patch.yaml` (optional strict mTLS patch)
 - `deploy/sidewhale-k8s-runtime-nodeport.yaml` (dev only)

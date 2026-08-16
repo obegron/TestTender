@@ -17,6 +17,9 @@ spec:
   backoffLimit: 0
   ttlSecondsAfterFinished: 86400
   template:
+    metadata:
+      labels:
+        sidewhale.io/client: "true"
     spec:
       restartPolicy: Never
       containers:

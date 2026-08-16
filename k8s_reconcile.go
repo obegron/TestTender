@@ -10,6 +10,7 @@ import (
 )
 
 func reconcileK8sRuntime(store *containerStore, m *metrics, namespaceOverride string, cleanupOrphans bool) {
+	fmt.Printf("sidewhale: k8s reconcile starting\n")
 	client, err := newInClusterK8sClient()
 	if err != nil {
 		fmt.Printf("sidewhale: k8s reconcile skipped: %v\n", err)
@@ -18,10 +19,36 @@ func reconcileK8sRuntime(store *containerStore, m *metrics, namespaceOverride st
 	if ns := strings.TrimSpace(namespaceOverride); ns != "" {
 		client.namespace = ns
 	}
+	fmt.Printf("sidewhale: k8s reconcile client ready namespace=%s\n", client.namespace)
 	stateIDs := map[string]struct{}{}
 	for _, id := range store.listContainerIDs() {
 		stateIDs[id] = struct{}{}
 	}
+	expectedPolicies := map[string]struct{}{}
+	for _, id := range store.listContainerIDs() {
+		c, ok := store.findContainer(id)
+		if !ok || c == nil || strings.TrimSpace(c.K8sPodName) == "" {
+			continue
+		}
+		ns := strings.TrimSpace(c.K8sNamespace)
+		if ns == "" {
+			ns = client.namespace
+		}
+		if ns != client.namespace {
+			continue
+		}
+		policyName := ownerNetworkPolicyName(c.Owner)
+		if _, done := expectedPolicies[policyName]; !done {
+			expectedPolicies[policyName] = struct{}{}
+			if err := client.ensureOwnerNetworkPolicy(context.Background(), c.Owner); err != nil {
+				fmt.Printf("sidewhale: owner network policy reconcile failed owner=%s err=%v\n", ownerK8sID(c.Owner), err)
+			}
+		}
+		if err := client.patchPodOwnerLabel(context.Background(), ns, c.K8sPodName, c.Owner); err != nil {
+			fmt.Printf("sidewhale: worker owner label reconcile failed pod=%s owner=%s err=%v\n", c.K8sPodName, ownerK8sID(c.Owner), err)
+		}
+	}
+	fmt.Printf("sidewhale: k8s owner policy reconcile completed policies=%d\n", len(expectedPolicies))
 	if cleanupOrphans {
 		pods, err := client.listPodsByLabel(context.Background(), client.namespace, "sidewhale.managed=true")
 		if err != nil {
@@ -42,6 +69,21 @@ func reconcileK8sRuntime(store *containerStore, m *metrics, namespaceOverride st
 				fmt.Printf("sidewhale: deleted orphan worker pod=%s\n", pod.Metadata.Name)
 			}
 		}
+		fmt.Printf("sidewhale: k8s orphan pod reconcile completed\n")
+		policies, err := client.listOwnerNetworkPolicies(context.Background())
+		if err != nil {
+			fmt.Printf("sidewhale: owner network policy orphan scan failed: %v\n", err)
+		} else {
+			for _, policy := range policies {
+				if _, ok := expectedPolicies[policy.Metadata.Name]; ok {
+					continue
+				}
+				if err := client.deleteNetworkPolicy(context.Background(), policy.Metadata.Name); err != nil {
+					fmt.Printf("sidewhale: owner network policy orphan delete failed policy=%s err=%v\n", policy.Metadata.Name, err)
+				}
+			}
+		}
+		fmt.Printf("sidewhale: k8s orphan policy reconcile completed\n")
 	}
 	running := 0
 	for _, id := range store.listContainerIDs() {

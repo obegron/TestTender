@@ -23,7 +23,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			"GoVersion":     goVersion,
 			"BuildTime":     buildTime,
 			"Os":            "linux",
-			"Arch":          "amd64",
+			"Arch":          runtime.GOARCH,
 		})
 	})
 	mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
@@ -36,13 +36,13 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			"ID":              "sidewhale",
 			"OperatingSystem": "linux",
 			"OSType":          "linux",
-			"Architecture":    "amd64",
+			"Architecture":    runtime.GOARCH,
 			"ServerVersion":   version,
 			"RuntimeBackend":  cfg.runtimeBackend,
 			"MemTotal":        memTotal,
 			"NCPU":            runtime.NumCPU(),
 			"Name":            "sidewhale",
-			"Containers":      len(store.listContainers()),
+			"Containers":      len(store.listContainersForOwner(requestOwner(r))),
 			"Images":          0,
 			"Driver":          "vfs",
 		}
@@ -259,8 +259,9 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 			writeError(w, http.StatusNotFound, "not found")
 			return
 		}
+		owner := requestOwner(r)
 		if cfg.runtimeBackend == runtimeBackendK8s {
-			for _, id := range store.listContainerIDs() {
+			for _, id := range store.listContainerIDsForOwner(owner) {
 				c, ok := store.findContainer(id)
 				if !ok || c == nil || strings.TrimSpace(c.K8sPodName) == "" {
 					continue
@@ -268,7 +269,7 @@ func newRouter(store *containerStore, m *metrics, cfg appConfig, probes *probeSt
 				_, _ = syncK8sContainerState(r.Context(), store, c)
 			}
 		}
-		list := store.listContainers()
+		list := store.listContainersForOwner(owner)
 		writeJSON(w, http.StatusOK, list)
 	})
 	return mux

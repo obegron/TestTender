@@ -1,9 +1,6 @@
 package main
 
 import (
-	"encoding/json"
-	"errors"
-	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -16,8 +13,7 @@ func handleNetworksCreate(w http.ResponseWriter, r *http.Request, store *contain
 		return
 	}
 	var req networkCreateRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeJSONRequest(w, r, &req, true) {
 		return
 	}
 	name := strings.TrimSpace(req.Name)
@@ -25,7 +21,8 @@ func handleNetworksCreate(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusBadRequest, "network name required")
 		return
 	}
-	if existing, ok := store.findNetwork(name); ok && req.CheckDuplicate {
+	owner := requestOwner(r)
+	if existing, ok := store.findNetworkForOwner(name, owner); ok && req.CheckDuplicate {
 		writeJSON(w, http.StatusCreated, map[string]interface{}{
 			"Id":      existing.ID,
 			"Warning": "network already exists",
@@ -39,6 +36,7 @@ func handleNetworksCreate(w http.ResponseWriter, r *http.Request, store *contain
 	}
 	n := &Network{
 		ID:         id,
+		Owner:      owner,
 		Name:       name,
 		Driver:     firstNonEmpty(strings.TrimSpace(req.Driver), "bridge"),
 		Scope:      "local",
@@ -80,7 +78,7 @@ func handleNetworksList(w http.ResponseWriter, r *http.Request, store *container
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, store.listNetworks())
+	writeJSON(w, http.StatusOK, store.listNetworksForOwner(requestOwner(r)))
 }
 
 func handleNetworkInspect(w http.ResponseWriter, r *http.Request, store *containerStore, ref string) {
@@ -88,12 +86,12 @@ func handleNetworkInspect(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.findNetwork(ref)
+	n, ok := store.findNetworkForOwner(ref, requestOwner(r))
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
 	}
-	writeJSON(w, http.StatusOK, n)
+	writeJSON(w, http.StatusOK, store.networkViewForOwner(n, requestOwner(r)))
 }
 
 func handleNetworkDelete(w http.ResponseWriter, r *http.Request, store *containerStore, ref string) {
@@ -101,7 +99,7 @@ func handleNetworkDelete(w http.ResponseWriter, r *http.Request, store *containe
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.findNetwork(ref)
+	n, ok := store.findNetworkForOwner(ref, requestOwner(r))
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
@@ -126,17 +124,17 @@ func handleNetworkConnect(w http.ResponseWriter, r *http.Request, store *contain
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.findNetwork(ref)
+	owner := requestOwner(r)
+	n, ok := store.findNetworkForOwner(ref, owner)
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
 	}
 	var req networkConnectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeJSONRequest(w, r, &req, true) {
 		return
 	}
-	c, ok := store.findContainer(req.Container)
+	c, ok := store.findContainerForOwner(req.Container, owner)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
@@ -153,17 +151,17 @@ func handleNetworkDisconnect(w http.ResponseWriter, r *http.Request, store *cont
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
-	n, ok := store.findNetwork(ref)
+	owner := requestOwner(r)
+	n, ok := store.findNetworkForOwner(ref, owner)
 	if !ok {
 		writeError(w, http.StatusNotFound, "network not found")
 		return
 	}
 	var req networkDisconnectRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeJSONRequest(w, r, &req, true) {
 		return
 	}
-	c, ok := store.findContainer(req.Container)
+	c, ok := store.findContainerForOwner(req.Container, owner)
 	if !ok {
 		writeError(w, http.StatusNotFound, "container not found")
 		return

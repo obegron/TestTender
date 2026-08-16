@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -44,11 +44,16 @@ func isTCPPortInUse(port int) bool {
 
 func parsePort(port string) (int, error) {
 	port = strings.TrimSpace(port)
-	port = strings.TrimSuffix(port, "/tcp")
-	port = strings.TrimSpace(port)
-	p, err := strconv.Atoi(port)
+	parts := strings.SplitN(port, "/", 2)
+	if len(parts) == 2 && !strings.EqualFold(strings.TrimSpace(parts[1]), "tcp") {
+		return 0, fmt.Errorf("unsupported port protocol %q", strings.TrimSpace(parts[1]))
+	}
+	p, err := strconv.Atoi(strings.TrimSpace(parts[0]))
 	if err != nil {
 		return 0, fmt.Errorf("invalid port: %w", err)
+	}
+	if p < 1 || p > 65535 {
+		return 0, fmt.Errorf("port out of range: %d", p)
 	}
 	return p, nil
 }
@@ -56,6 +61,21 @@ func parsePort(port string) (int, error) {
 func resolvePortBindings(exposedPorts map[string]struct{}, requestedExposed map[string]struct{}, hostBindings map[string][]portBinding) (map[int]int, error) {
 	ports := map[int]int{}
 	published := map[int]struct{}{}
+	hostPortOwners := map[int]int{}
+	allocateHostPort := func(containerPort int) (int, error) {
+		for attempts := 0; attempts < 32; attempts++ {
+			hostPort, err := allocatePort()
+			if err != nil {
+				return 0, err
+			}
+			if _, exists := hostPortOwners[hostPort]; exists {
+				continue
+			}
+			hostPortOwners[hostPort] = containerPort
+			return hostPort, nil
+		}
+		return 0, fmt.Errorf("failed to allocate a unique host port")
+	}
 
 	if len(requestedExposed) == 0 && len(hostBindings) == 0 {
 		// Backward-compatible default: publish all EXPOSEd image ports when no explicit publish list exists.
@@ -85,7 +105,10 @@ func resolvePortBindings(exposedPorts map[string]struct{}, requestedExposed map[
 			if binding.HostPort == "" {
 				continue
 			}
-			hp, err := strconv.Atoi(binding.HostPort)
+			if strings.TrimSpace(binding.HostPort) == "0" {
+				break
+			}
+			hp, err := parsePort(binding.HostPort)
 			if err != nil {
 				return nil, fmt.Errorf("invalid host port: %w", err)
 			}
@@ -93,12 +116,16 @@ func resolvePortBindings(exposedPorts map[string]struct{}, requestedExposed map[
 			break
 		}
 		if hostPort == 0 {
-			hp, err := allocatePort()
+			hp, err := allocateHostPort(cp)
 			if err != nil {
 				return nil, err
 			}
 			hostPort = hp
 		}
+		if owner, exists := hostPortOwners[hostPort]; exists && owner != cp {
+			return nil, fmt.Errorf("host port %d is requested by container ports %d and %d", hostPort, owner, cp)
+		}
+		hostPortOwners[hostPort] = cp
 		ports[cp] = hostPort
 		published[cp] = struct{}{}
 	}
@@ -106,7 +133,7 @@ func resolvePortBindings(exposedPorts map[string]struct{}, requestedExposed map[
 		if _, ok := ports[cp]; ok {
 			continue
 		}
-		hp, err := allocatePort()
+		hp, err := allocateHostPort(cp)
 		if err != nil {
 			return nil, err
 		}
@@ -131,7 +158,13 @@ func toDockerPorts(ports map[int]int) map[string][]map[string]string {
 
 func toDockerPortSummaries(ports map[int]int) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(ports))
-	for containerPort, hostPort := range ports {
+	containerPorts := make([]int, 0, len(ports))
+	for containerPort := range ports {
+		containerPorts = append(containerPorts, containerPort)
+	}
+	sort.Ints(containerPorts)
+	for _, containerPort := range containerPorts {
+		hostPort := ports[containerPort]
 		out = append(out, map[string]interface{}{
 			"IP":          "0.0.0.0",
 			"PrivatePort": containerPort,
@@ -303,58 +336,48 @@ func proxyConn(src net.Conn, containerPort int, target string) {
 	defer dst.Close()
 	done := make(chan struct{})
 	var c2sBytes int64
-	var c2sSample string
 	var c2sErr error
 	go func() {
-		c2sBytes, c2sSample, c2sErr = proxyCopy(dst, src)
+		c2sBytes, c2sErr = proxyCopy(dst, src)
 		if c2sErr != nil {
 			fmt.Printf("sidewhale: proxy c->s copy error containerPort=%d bytes=%d err=%v\n", containerPort, c2sBytes, c2sErr)
 		}
 		_ = closeWrite(dst)
 		close(done)
 	}()
-	s2cBytes, s2cSample, s2cErr := proxyCopy(src, dst)
+	s2cBytes, s2cErr := proxyCopy(src, dst)
 	if s2cErr != nil {
 		fmt.Printf("sidewhale: proxy s->c copy error containerPort=%d bytes=%d err=%v\n", containerPort, s2cBytes, s2cErr)
 	}
 	_ = closeWrite(src)
 	<-done
 	if c2sErr != nil || s2cErr != nil {
-		fmt.Printf("sidewhale: proxy closed containerPort=%d c2s=%d s2c=%d c2sErr=%v s2cErr=%v c2sSample=%s s2cSample=%s\n", containerPort, c2sBytes, s2cBytes, c2sErr, s2cErr, c2sSample, s2cSample)
+		fmt.Printf("sidewhale: proxy closed containerPort=%d c2s=%d s2c=%d c2sErr=%v s2cErr=%v\n", containerPort, c2sBytes, s2cBytes, c2sErr, s2cErr)
 	} else {
 		proxyDebugf("proxy closed clean containerPort=%d c2s=%d s2c=%d", containerPort, c2sBytes, s2cBytes)
 	}
 }
 
-func proxyCopy(dst net.Conn, src net.Conn) (int64, string, error) {
+func proxyCopy(dst net.Conn, src net.Conn) (int64, error) {
 	buf := make([]byte, 32*1024)
 	var written int64
-	sample := make([]byte, 0, 64)
 	for {
 		nr, er := src.Read(buf)
 		if nr > 0 {
-			if len(sample) < cap(sample) {
-				take := nr
-				remaining := cap(sample) - len(sample)
-				if take > remaining {
-					take = remaining
-				}
-				sample = append(sample, buf[:take]...)
-			}
 			nw, ew := dst.Write(buf[:nr])
 			written += int64(nw)
 			if ew != nil {
-				return written, hex.EncodeToString(sample), ew
+				return written, ew
 			}
 			if nw != nr {
-				return written, hex.EncodeToString(sample), io.ErrShortWrite
+				return written, io.ErrShortWrite
 			}
 		}
 		if er != nil {
 			if errors.Is(er, io.EOF) {
-				return written, hex.EncodeToString(sample), nil
+				return written, nil
 			}
-			return written, hex.EncodeToString(sample), er
+			return written, er
 		}
 	}
 }

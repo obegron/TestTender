@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -32,7 +33,7 @@ func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, t
 		remote.WithContext(ctx),
 		remote.WithPlatform(v1.Platform{
 			OS:           "linux",
-			Architecture: "amd64",
+			Architecture: runtime.GOARCH,
 		}),
 	}
 	if trustInsecure {
@@ -64,7 +65,7 @@ func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, t
 				if usage, usageErr := dirSize(rootfsDir); usageErr == nil {
 					meta.DiskUsage = usage
 					if data, marshalErr := json.MarshalIndent(meta, "", "  "); marshalErr == nil {
-						_ = os.WriteFile(metaPath, data, 0o644)
+						_ = atomicWriteFile(metaPath, data, 0o600)
 					}
 				}
 			}
@@ -123,8 +124,12 @@ func ensureImage(ctx context.Context, ref string, stateDir string, m *metrics, t
 		meta.WorkingDir = cfg.Config.WorkingDir
 		meta.User = cfg.Config.User
 	}
-	if data, err := json.MarshalIndent(meta, "", "  "); err == nil {
-		_ = os.WriteFile(metaPath, data, 0o644)
+	data, err := json.MarshalIndent(meta, "", "  ")
+	if err != nil {
+		return "", imageMeta{}, fmt.Errorf("image metadata encode failed: %w", err)
+	}
+	if err := atomicWriteFile(metaPath, data, 0o600); err != nil {
+		return "", imageMeta{}, fmt.Errorf("image metadata write failed: %w", err)
 	}
 
 	if m != nil {

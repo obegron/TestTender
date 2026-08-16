@@ -64,6 +64,9 @@ func TestParsePort(t *testing.T) {
 		{in: "8080", want: 8080},
 		{in: " 6379/tcp ", want: 6379},
 		{in: "abc", wantErr: true},
+		{in: "0", wantErr: true},
+		{in: "65536", wantErr: true},
+		{in: "53/udp", wantErr: true},
 	}
 	for _, tt := range tests {
 		got, err := parsePort(tt.in)
@@ -79,6 +82,23 @@ func TestParsePort(t *testing.T) {
 		if got != tt.want {
 			t.Fatalf("parsePort(%q) = %d, want %d", tt.in, got, tt.want)
 		}
+	}
+}
+
+func TestResolvePortBindingsRejectsDuplicateHostPort(t *testing.T) {
+	hostBindings := map[string][]portBinding{
+		"8080/tcp": {{HostPort: "18080"}},
+		"8081/tcp": {{HostPort: "18080"}},
+	}
+	if _, err := resolvePortBindings(nil, nil, hostBindings); err == nil {
+		t.Fatal("expected duplicate host port error")
+	}
+}
+
+func TestToDockerPortSummariesIsSorted(t *testing.T) {
+	got := toDockerPortSummaries(map[int]int{9000: 19000, 1000: 11000})
+	if got[0]["PrivatePort"] != 1000 || got[1]["PrivatePort"] != 9000 {
+		t.Fatalf("port summaries not sorted: %#v", got)
 	}
 }
 

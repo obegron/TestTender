@@ -19,6 +19,10 @@ import (
 	"time"
 )
 
+const maxArchiveEntries = 100_000
+
+var errArchiveTooManyEntries = errors.New("archive contains too many entries")
+
 // isSafeLinkTarget checks whether a link target from a tar header
 // resolves to a location within the provided destination directory.
 func isSafeLinkTarget(linkname, symlinkTargetPath, dst string) (bool, error) {
@@ -153,6 +157,11 @@ func handleArchivePut(w http.ResponseWriter, r *http.Request, store *containerSt
 	})
 	if err != nil {
 		fmt.Printf("sidewhale: archive put extract failed container=%s path=%s err=%v\n", c.ID, containerPath, err)
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) || errors.Is(err, errArchiveTooManyEntries) {
+			writeError(w, http.StatusRequestEntityTooLarge, "archive upload too large")
+			return
+		}
 		writeError(w, http.StatusInternalServerError, "archive extract failed: "+err.Error())
 		return
 	}
@@ -832,6 +841,7 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 	tr := tar.NewReader(r)
 	seenTop := map[string]struct{}{}
 	var topOrder []string
+	entryCount := 0
 
 	addTop := func(cleanName string) {
 		first := strings.Split(cleanName, "/")[0]
@@ -856,8 +866,12 @@ func untarToDir(r io.Reader, dst string) ([]string, error) {
 		if h == nil {
 			continue
 		}
+		entryCount++
+		if entryCount > maxArchiveEntries {
+			return nil, errArchiveTooManyEntries
+		}
 		rawName := strings.TrimSpace(h.Name)
-		if rawName == "" || strings.Contains(rawName, "..") {
+		if rawName == "" {
 			continue
 		}
 		cleanName, ok := normalizeLayerPath(h.Name)

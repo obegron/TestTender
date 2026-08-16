@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,9 +16,9 @@ import (
 )
 
 func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore, runtimeBackend string, allowedPrefixes []string, mirrorRules []imageMirrorRule, unixSocketPath string, trustInsecure bool, ensureImage func(context.Context, string, string, *metrics, bool) (string, imageMeta, error)) {
+	owner := requestOwner(r)
 	var req createRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
-		writeError(w, http.StatusBadRequest, "invalid json")
+	if !decodeJSONRequest(w, r, &req, true) {
 		return
 	}
 	if strings.TrimSpace(req.Image) == "" {
@@ -82,12 +81,21 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		writeError(w, http.StatusInternalServerError, "id generation failed")
 		return
 	}
+	containerDir := filepath.Join(store.stateDir, "containers", id)
+	committed := false
+	defer func() {
+		if committed {
+			return
+		}
+		store.disconnectContainerFromAllNetworks(id)
+		_ = os.RemoveAll(containerDir)
+	}()
 	hostname := normalizeContainerHostname(req.Hostname)
 	if hostname == "" {
 		hostname = defaultContainerHostname(id)
 	}
 
-	rootfs := filepath.Join(store.stateDir, "containers", id, "rootfs")
+	rootfs := filepath.Join(containerDir, "rootfs")
 	if err := os.MkdirAll(rootfs, 0o755); err != nil {
 		writeError(w, http.StatusInternalServerError, "rootfs allocation failed")
 		return
@@ -155,6 +163,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 
 	c := &Container{
 		ID:            id,
+		Owner:         owner,
 		Name:          name,
 		Hostname:      hostname,
 		User:          firstNonEmpty(strings.TrimSpace(req.User), strings.TrimSpace(meta.User)),
@@ -171,7 +180,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		LogPath:       logPath,
 		StdoutPath:    stdoutPath,
 		StderrPath:    stderrPath,
-		Cmd:           append(entrypoint, cmd...),
+		Cmd:           append(append([]string{}, entrypoint...), cmd...),
 		Entrypoint:    append([]string{}, entrypoint...),
 		Args:          append([]string{}, cmd...),
 		NetworkMode:   "bridge",
@@ -196,7 +205,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		if strings.EqualFold(networkRef, "default") {
 			networkRef = "bridge"
 		}
-		n, ok := store.findNetwork(networkRef)
+		n, ok := store.findNetworkForOwner(networkRef, owner)
 		if !ok {
 			writeError(w, http.StatusNotFound, "network not found")
 			return
@@ -221,7 +230,7 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 			}
 		case "host", "none":
 		default:
-			n, ok := store.findNetwork(c.NetworkMode)
+			n, ok := store.findNetworkForOwner(c.NetworkMode, owner)
 			if !ok {
 				writeError(w, http.StatusNotFound, "network not found")
 				return
@@ -237,38 +246,31 @@ func handleCreate(w http.ResponseWriter, r *http.Request, store *containerStore,
 		writeError(w, http.StatusInternalServerError, "state write failed")
 		return
 	}
+	committed = true
 	writeJSON(w, http.StatusCreated, createResponse{ID: id, Warnings: nil})
 }
 
 func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, m *metrics, limits runtimeLimits, runtimeBackend, k8sRuntimeNamespace string, k8sImagePullSecrets []string, id string) {
-	c, ok := store.findContainer(id)
-	if !ok {
+	c, found, already := store.beginContainerStart(id)
+	if !found {
 		writeError(w, http.StatusNotFound, "container not found")
 		return
 	}
-	if c.Running {
+	if already {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
+	defer store.endContainerStart(c.ID)
 	if isRyukImage(c.Image) {
 		runtimeBackend = runtimeBackendHost
 	}
-	if limits.maxConcurrent > 0 {
-		// Reconcile runtime count from persisted container state to avoid
-		// stale in-memory counters producing false 409 conflicts.
-		currentRunning := store.runningCount()
-		m.mu.Lock()
-		m.running = currentRunning
-		if m.running >= limits.maxConcurrent {
-			current := m.running
-			m.mu.Unlock()
-			writeError(w, http.StatusConflict, fmt.Sprintf("max concurrent containers reached (%d/%d)", current, limits.maxConcurrent))
-			return
-		}
-		m.running++
-		m.mu.Unlock()
+	// Reconcile upward from persisted state without overwriting reservations
+	// made by concurrent start requests.
+	if current, ok := reserveRuntimeSlot(store, m, limits.maxConcurrent); !ok {
+		writeError(w, http.StatusConflict, fmt.Sprintf("max concurrent containers reached (%d/%d)", current, limits.maxConcurrent))
+		return
 	}
-	reserved := limits.maxConcurrent > 0
+	reserved := true
 	if runtimeBackend == runtimeBackendK8s {
 		client, err := newInClusterK8sClient()
 		if err != nil {
@@ -550,6 +552,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	}
 	cmdArgs = resolveCommandInRootfs(c.Rootfs, c.Env, cmdArgs)
 	runtimeEnv := append([]string{}, c.Env...)
+	runtimeUser := c.User
 	runtimeTargets := clonePortTargets(c.PortTargets)
 	sshCompatPort := 0
 	ensureLoopbackIP := func() error {
@@ -569,6 +572,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	}
 	if isRedisImage(c.Image) {
 		cmdArgs = applyRedisRuntimeCompat(cmdArgs, c.LoopbackIP)
+		runtimeUser = applyRedisRuntimeCompatUser(c.Rootfs, runtimeUser)
 		runtimeTargets[6379] = c.LoopbackIP + ":6379"
 	}
 	if isLLdapImage(c.Image) {
@@ -654,7 +658,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		return
 	}
 
-	cmd, err := buildContainerCommand(c.Rootfs, containerTmpDir(c), c.WorkingDir, c.User, socketBinds, cmdArgs)
+	cmd, err := buildContainerCommand(c.Rootfs, containerTmpDir(c), c.WorkingDir, runtimeUser, socketBinds, cmdArgs)
 	if err != nil {
 		if reserved {
 			m.mu.Lock()
@@ -672,7 +676,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	runtimeEnv = ensureProotTmpDirEnv(runtimeEnv)
 	cmd.Env = deduplicateEnv(append(os.Environ(), runtimeEnv...))
 
-	logFile, err := os.OpenFile(c.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	logFile, err := os.OpenFile(c.LogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		if reserved {
 			m.mu.Lock()
@@ -692,7 +696,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	if strings.TrimSpace(stderrPath) == "" {
 		stderrPath = c.LogPath
 	}
-	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	stdoutFile, err := os.OpenFile(stdoutPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		logFile.Close()
 		if reserved {
@@ -705,7 +709,7 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 		writeError(w, http.StatusInternalServerError, "log open failed")
 		return
 	}
-	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	stderrFile, err := os.OpenFile(stderrPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		stdoutFile.Close()
 		logFile.Close()
@@ -832,6 +836,20 @@ func handleStart(w http.ResponseWriter, r *http.Request, store *containerStore, 
 	go monitorContainer(c.ID, c.Pid, c.LogPath, store, limits)
 
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func reserveRuntimeSlot(store *containerStore, m *metrics, maxConcurrent int) (int, bool) {
+	currentRunning := store.runningCount()
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if currentRunning > m.running {
+		m.running = currentRunning
+	}
+	if maxConcurrent > 0 && m.running >= maxConcurrent {
+		return m.running, false
+	}
+	m.running++
+	return m.running, true
 }
 
 func waitForPostgresReady(ctx context.Context, client *k8sClient, namespace, podName string, timeout time.Duration) error {
@@ -1070,16 +1088,25 @@ func handleDelete(w http.ResponseWriter, r *http.Request, store *containerStore,
 		store.markStoppedWithExit(c.ID, &exitCode, time.Now().UTC())
 	}
 
-	_ = os.RemoveAll(filepath.Dir(c.Rootfs))
-	_ = os.Remove(c.LogPath)
-	_ = os.Remove(c.StdoutPath)
-	_ = os.Remove(c.StderrPath)
-	_ = os.Remove(store.containerPath(c.ID))
+	if isSafeStateID(c.ID) {
+		_ = os.RemoveAll(filepath.Join(store.stateDir, "containers", c.ID))
+		_ = os.Remove(store.containerPath(c.ID))
+	}
 
 	store.mu.Lock()
 	delete(store.containers, c.ID)
 	store.mu.Unlock()
 	store.disconnectContainerFromAllNetworks(c.ID)
+	if strings.TrimSpace(c.K8sPodName) != "" && !store.hasK8sContainersForOwner(c.Owner, c.K8sNamespace) {
+		if client, err := newInClusterK8sClient(); err == nil {
+			if ns := strings.TrimSpace(c.K8sNamespace); ns != "" {
+				client.namespace = ns
+			}
+			if err := client.deleteOwnerNetworkPolicy(r.Context(), c.Owner); err != nil {
+				fmt.Printf("sidewhale: owner network policy cleanup failed owner=%s err=%v\n", ownerK8sID(c.Owner), err)
+			}
+		}
+	}
 
 	w.WriteHeader(http.StatusNoContent)
 }

@@ -33,6 +33,96 @@ func TestContainerLookupByNameAndShortID(t *testing.T) {
 	}
 }
 
+func TestContainerLookupRejectsEmptyAndAmbiguousPrefix(t *testing.T) {
+	store := &containerStore{containers: map[string]*Container{
+		"abc111": {ID: "abc111"},
+		"abc222": {ID: "abc222"},
+	}}
+	for _, ref := range []string{"", "abc"} {
+		if c, ok := store.findContainer(ref); ok || c != nil {
+			t.Fatalf("findContainer(%q) = (%+v, %v), want not found", ref, c, ok)
+		}
+	}
+	if c, ok := store.findContainer("abc1"); !ok || c.ID != "abc111" {
+		t.Fatalf("unique prefix lookup failed: (%+v, %v)", c, ok)
+	}
+}
+
+func TestContainerStartReservationIsExclusive(t *testing.T) {
+	store := &containerStore{containers: map[string]*Container{"abc": {ID: "abc"}}}
+	c, found, already := store.beginContainerStart("abc")
+	if !found || already || c == nil {
+		t.Fatalf("first reservation = (%+v, %v, %v)", c, found, already)
+	}
+	if _, found, already := store.beginContainerStart("abc"); !found || !already {
+		t.Fatalf("second reservation = (found=%v, already=%v), want true, true", found, already)
+	}
+	store.endContainerStart("abc")
+	if _, found, already := store.beginContainerStart("abc"); !found || already {
+		t.Fatalf("reservation after release = (found=%v, already=%v), want true, false", found, already)
+	}
+}
+
+func TestReserveRuntimeSlotPreservesConcurrentReservation(t *testing.T) {
+	store := &containerStore{containers: map[string]*Container{}}
+	m := &metrics{}
+	if current, ok := reserveRuntimeSlot(store, m, 1); !ok || current != 1 {
+		t.Fatalf("first reservation = (%d, %v), want (1, true)", current, ok)
+	}
+	if current, ok := reserveRuntimeSlot(store, m, 1); ok || current != 1 {
+		t.Fatalf("second reservation = (%d, %v), want (1, false)", current, ok)
+	}
+}
+
+func TestSaveContainerUsesPrivateAtomicStateFile(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "containers"), 0o755); err != nil {
+		t.Fatalf("mkdir containers: %v", err)
+	}
+	store := &containerStore{containers: map[string]*Container{}, stateDir: stateDir}
+	c := &Container{ID: "abc", Env: []string{"TOKEN=secret"}}
+	if err := store.saveContainer(c); err != nil {
+		t.Fatalf("saveContainer: %v", err)
+	}
+	info, err := os.Stat(store.containerPath(c.ID))
+	if err != nil {
+		t.Fatalf("stat state: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("state mode = %o, want 600", got)
+	}
+	matches, err := filepath.Glob(filepath.Join(stateDir, "containers", ".abc.json-*"))
+	if err != nil || len(matches) != 0 {
+		t.Fatalf("temporary state files = %v, err=%v", matches, err)
+	}
+}
+
+func TestStoreRejectsUnsafePersistedContainerID(t *testing.T) {
+	stateDir := t.TempDir()
+	for _, dir := range []string{"containers", "networks"} {
+		if err := os.MkdirAll(filepath.Join(stateDir, dir), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	data, err := json.Marshal(&Container{ID: "../escape", Rootfs: stateDir})
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "containers", "record.json"), data, 0o600); err != nil {
+		t.Fatalf("write state: %v", err)
+	}
+	store := &containerStore{containers: map[string]*Container{}, networks: map[string]*Network{}, stateDir: stateDir}
+	if err := store.loadAll(); err != nil {
+		t.Fatalf("loadAll: %v", err)
+	}
+	if len(store.containers) != 0 {
+		t.Fatalf("loaded unsafe state: %#v", store.containers)
+	}
+	if err := store.saveContainer(&Container{ID: "../escape"}); err == nil {
+		t.Fatal("saveContainer should reject unsafe id")
+	}
+}
+
 func TestContainerDisplayName(t *testing.T) {
 	withName := &Container{ID: "abc", Name: "db"}
 	if got := containerDisplayName(withName); got != "/db" {

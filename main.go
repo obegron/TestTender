@@ -55,6 +55,7 @@ func main() {
 		stateDir:   cfg.stateDir,
 		proxies:    make(map[string][]*portProxy),
 		sshCompat:  make(map[string]*sshCompatServer),
+		starting:   make(map[string]struct{}),
 	}
 	if err := store.init(); err != nil {
 		fmt.Fprintf(os.Stderr, "state init failed: %v\n", err)
@@ -67,15 +68,21 @@ func main() {
 	}
 	probes := &probeState{}
 	mux := newRouter(store, m, cfg, probes)
-	handler := timeoutMiddleware(apiVersionMiddleware(mux))
+	handler := requestBodyLimitMiddleware(cfg.maxRequestBodyBytes, cfg.maxArchiveBytes)(timeoutMiddleware(apiVersionMiddleware(resourceOwnershipMiddleware(store, mux))))
 	if traceHTTPEnabled() {
 		handler = traceHTTPMiddleware(handler)
 		fmt.Printf("sidewhale: http trace enabled via SIDEWHALE_TRACE_HTTP\n")
 	}
 
+	tlsConfig, err := loadServerTLSConfig(cfg.tlsClientCAFile)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "TLS config failed: %v\n", err)
+		os.Exit(1)
+	}
 	server := &http.Server{
 		Addr:              cfg.listenAddr,
 		Handler:           handler,
+		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 5 * time.Second,
 		// Keep request body streaming unbounded in duration so large archive uploads
 		// (PUT /containers/{id}/archive) are not reset mid-transfer.
@@ -96,8 +103,19 @@ func main() {
 	if tcpAddr != "" && !strings.EqualFold(tcpAddr, "off") && tcpAddr != "-" {
 		started++
 		go func() {
-			fmt.Printf("sidewhale listening on %s\n", tcpAddr)
-			if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			tlsEnabled := cfg.tlsCertFile != ""
+			if tlsEnabled {
+				fmt.Printf("sidewhale listening with TLS on %s\n", tcpAddr)
+			} else {
+				fmt.Printf("sidewhale listening on %s\n", tcpAddr)
+			}
+			var err error
+			if tlsEnabled {
+				err = server.ListenAndServeTLS(cfg.tlsCertFile, cfg.tlsKeyFile)
+			} else {
+				err = server.ListenAndServe()
+			}
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
 				errCh <- err
 			}
 		}()

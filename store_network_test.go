@@ -32,3 +32,13 @@ func TestSelfHostAliasesForContainer(t *testing.T) {
 		t.Fatalf("name ip = %q, want 127.0.0.9", got["kafka-upstream-shape-it"])
 	}
 }
+
+func TestFindNetworkRejectsAmbiguousPrefix(t *testing.T) {
+	store := &containerStore{networks: map[string]*Network{
+		"abc111": {ID: "abc111", Name: "one"},
+		"abc222": {ID: "abc222", Name: "two"},
+	}}
+	if n, ok := store.findNetwork("abc"); ok || n != nil {
+		t.Fatalf("ambiguous network lookup = (%+v, %v), want not found", n, ok)
+	}
+}

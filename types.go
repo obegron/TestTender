@@ -8,6 +8,7 @@ import (
 
 type Container struct {
 	ID            string    `json:"Id"`
+	Owner         string    `json:"Owner,omitempty"`
 	Name          string    `json:"Name,omitempty"`
 	Hostname      string    `json:"Hostname,omitempty"`
 	User          string    `json:"User,omitempty"`
@@ -49,10 +50,12 @@ type containerStore struct {
 	stateDir   string
 	proxies    map[string][]*portProxy
 	sshCompat  map[string]*sshCompatServer
+	starting   map[string]struct{}
 }
 
 type ExecInstance struct {
 	ID          string
+	Owner       string
 	ContainerID string
 	Cmd         []string
 	User        string
@@ -173,6 +176,7 @@ type portProxy struct {
 
 type Network struct {
 	ID         string                      `json:"Id"`
+	Owner      string                      `json:"Owner,omitempty"`
 	Name       string                      `json:"Name"`
 	Driver     string                      `json:"Driver"`
 	Scope      string                      `json:"Scope"`

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -28,6 +30,30 @@ func TestApplyRedisRuntimeCompatKeepsExistingBind(t *testing.T) {
 		if got[i] != in[i] {
 			t.Fatalf("arg[%d] = %q, want %q (%v)", i, got[i], in[i], got)
 		}
+	}
+}
+
+func TestApplyRedisRuntimeCompatUserSelectsImageAccount(t *testing.T) {
+	rootfs := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(rootfs, "etc"), 0o755); err != nil {
+		t.Fatalf("mkdir etc: %v", err)
+	}
+	passwd := "root:x:0:0:root:/root:/bin/sh\nredis:x:999:1000:redis:/data:/sbin/nologin\n"
+	if err := os.WriteFile(filepath.Join(rootfs, "etc", "passwd"), []byte(passwd), 0o644); err != nil {
+		t.Fatalf("write passwd: %v", err)
+	}
+
+	if got := applyRedisRuntimeCompatUser(rootfs, ""); got != "redis" {
+		t.Fatalf("empty user resolved to %q, want redis", got)
+	}
+	if got := applyRedisRuntimeCompatUser(rootfs, "123:456"); got != "123:456" {
+		t.Fatalf("explicit user resolved to %q, want unchanged", got)
+	}
+}
+
+func TestApplyRedisRuntimeCompatUserWithoutAccountStaysDefault(t *testing.T) {
+	if got := applyRedisRuntimeCompatUser(t.TempDir(), ""); got != "" {
+		t.Fatalf("missing redis account resolved to %q, want empty", got)
 	}
 }
 

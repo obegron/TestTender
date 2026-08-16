@@ -4,21 +4,27 @@ BINARY := sidewhale
 IMAGE_NAME ?= sidewhale
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 PLATFORM ?= linux/amd64
+GOOS ?= linux
+GOARCH ?= amd64
 GIT_COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
 BUILD_TIME ?= $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
 LDFLAGS := -s -w -X 'main.version=$(VERSION)' -X 'main.gitCommit=$(GIT_COMMIT)' -X 'main.buildTime=$(BUILD_TIME)'
 
-.PHONY: help build image docker-build docker-push image-run smoke-pull integration-test integration-test-upstream integration-test-upstream-mirrored integration-test-upstream-k8s-image integration-test-upstream-k8s-sidewhale-image integration-test-upstream-k8s integration-test-upstream-k8s-logs integration-test-upstream-k8s-clean integration-test-upstream-k8s-reset integration-test-kafka-listener-k8s integration-test-kafka-listener-k8s-clean integration-test-kafka-log-stream-k8s integration-test-kafka-log-stream-k8s-clean integration-test-kafka-upstream-shape-k8s integration-test-kafka-upstream-shape-k8s-clean endurance-test clean
+.PHONY: help build test check image docker-build docker-push image-run smoke-pull integration-test integration-test-java-smoke-k8s-image integration-test-java-smoke-k8s integration-test-java-smoke-k8s-clean integration-test-mtls-k8s integration-test-mtls-k8s-clean integration-test-upstream integration-test-upstream-mirrored integration-test-upstream-k8s-image integration-test-upstream-k8s-sidewhale-image integration-test-upstream-k8s integration-test-upstream-k8s-logs integration-test-upstream-k8s-clean integration-test-upstream-k8s-reset integration-test-kafka-listener-k8s integration-test-kafka-listener-k8s-clean integration-test-kafka-log-stream-k8s integration-test-kafka-log-stream-k8s-clean integration-test-kafka-upstream-shape-k8s integration-test-kafka-upstream-shape-k8s-clean endurance-test clean
 
 help:
 	@echo "Targets:"
 	@echo "  build   Build $(BINARY) binary"
+	@echo "  test          Run unit tests"
+	@echo "  check         Run formatting, vet, unit tests, and race tests"
 	@echo "  image         Build container image ($(IMAGE_NAME):$(VERSION))"
 	@echo "  docker-build  Build image via buildx for $(PLATFORM)"
 	@echo "  docker-push   Build and push image with provenance + SBOM"
 	@echo "  image-run   Run image in host network mode and print DOCKER_HOST env var"
 	@echo "  smoke-pull  Quick API smoke test (ping/version + image pull)"
 	@echo "  integration-test Run Java Testcontainers smoke tests against Sidewhale"
+	@echo "  integration-test-java-smoke-k8s Build and run the Java Redis/PostgreSQL smoke suite in k8s"
+	@echo "  integration-test-mtls-k8s Prove two client certificates are resource-isolated in k8s"
 	@echo "  integration-test-upstream Run selected upstream non-turbo testcontainers-java tests"
 	@echo "  integration-test-upstream-mirrored Run upstream tests through local registry mirrors"
 	@echo "  integration-test-upstream-k8s-image Build upstream Gradle runner image"
@@ -39,6 +45,8 @@ help:
 	@echo "  VERSION    Override version tag (default: git describe or dev)"
 	@echo "  IMAGE_NAME Override image name (default: sidewhale)"
 	@echo "  PLATFORM   buildx platform (default: linux/amd64)"
+	@echo "  GOOS       Binary target OS (default: linux)"
+	@echo "  GOARCH     Binary target architecture (default: amd64)"
 	@echo "  SMOKE_IMAGE Image used by smoke-pull (default: redis:7-alpine)"
 	@echo "  SIDEWHALE_RUN_ARGS Extra args passed to sidewhale in smoke-pull"
 	@echo "  UPSTREAM_TC_TASK Gradle task for integration-test-upstream"
@@ -62,7 +70,16 @@ help:
 	@echo "  K8S_SIDEWHALE_IMAGE Sidewhale image for k8s runtime (default: sidewhale:dev)"
 
 build:
-	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
+	CGO_ENABLED=0 GOOS=$(GOOS) GOARCH=$(GOARCH) go build -trimpath -ldflags "$(LDFLAGS)" -o $(BINARY) .
+
+test:
+	go test ./...
+
+check:
+	@test -z "$$(gofmt -l -- *.go)" || { gofmt -l -- *.go; exit 1; }
+	go vet ./...
+	go test ./...
+	go test -race ./...
 
 image:
 	docker build --build-arg VERSION=$(VERSION) --build-arg GIT_COMMIT=$(GIT_COMMIT) --build-arg BUILD_TIME=$(BUILD_TIME) -t $(IMAGE_NAME):$(VERSION) .
@@ -105,7 +122,7 @@ K8S_UPSTREAM_REF ?=
 K8S_UPSTREAM_TASK ?= :testcontainers:test
 K8S_UPSTREAM_TEST_ARGS ?= --tests org.testcontainers.containers.ContainerStateTest
 K8S_UPSTREAM_EXTRA_GRADLE_ARGS ?= --rerun-tasks --max-workers=1 --no-daemon
-K8S_SIDEWHALE_DOCKER_HOST ?=
+K8S_SIDEWHALE_DOCKER_HOST ?= tcp://sidewhale.$(K8S_NAMESPACE).svc.cluster.local:23750
 K8S_UPSTREAM_PRECOMPILE_TASKS ?= :testcontainers:testClasses :testcontainers-postgresql:testClasses :testcontainers-ldap:testClasses :testcontainers-mockserver:testClasses
 K8S_UPSTREAM_PREWARM_DEPS ?= true
 K8S_KAFKA_IT_JOB_NAME ?= sidewhale-kafka-listener-it
@@ -115,6 +132,16 @@ K8S_KAFKA_LOG_IT_TIMEOUT ?= 600s
 K8S_KAFKA_UPSTREAM_IT_JOB_NAME ?= sidewhale-kafka-upstream-shape-it
 K8S_KAFKA_UPSTREAM_IT_TIMEOUT ?= 900s
 K8S_SIDEWHALE_IMAGE ?= sidewhale:dev
+K8S_JAVA_SMOKE_IMAGE ?= sidewhale-testcontainers-smoke
+K8S_JAVA_SMOKE_TAG ?= dev
+K8S_JAVA_SMOKE_JOB_NAME ?= sidewhale-java-smoke
+K8S_JAVA_SMOKE_TIMEOUT ?= 600s
+K8S_SIDEWHALE_TLS_SECRET ?=
+K8S_MTLS_JOB_NAME ?= sidewhale-mtls-isolation
+K8S_MTLS_TIMEOUT ?= 180s
+K8S_MTLS_HOLD_SECONDS ?= 0
+K8S_MTLS_CLIENT_A_SECRET ?= sidewhale-client-a-tls
+K8S_MTLS_CLIENT_B_SECRET ?= sidewhale-client-b-tls
 K8S_RESET_MODE ?= namespace
 ENDURANCE_BACKENDS ?= proot,k8s
 ENDURANCE_TASKS ?= :testcontainers-postgresql:test,:testcontainers-ldap:test,:testcontainers-mockserver:test
@@ -147,6 +174,39 @@ integration-test:
 	fi; \
 	cd "$(IT_SMOKE_DIR)"; \
 	mvn -q test
+
+integration-test-java-smoke-k8s-image:
+	docker build -t $(K8S_JAVA_SMOKE_IMAGE):$(K8S_JAVA_SMOKE_TAG) $(IT_SMOKE_DIR)
+	k3d image import $(K8S_JAVA_SMOKE_IMAGE):$(K8S_JAVA_SMOKE_TAG) -c $(K8S_CLUSTER_NAME)
+
+integration-test-java-smoke-k8s:
+	K8S_CONTEXT="$(K8S_CONTEXT)" \
+	K8S_NAMESPACE="$(K8S_NAMESPACE)" \
+	K8S_JAVA_SMOKE_IMAGE="$(K8S_JAVA_SMOKE_IMAGE)" \
+	K8S_JAVA_SMOKE_TAG="$(K8S_JAVA_SMOKE_TAG)" \
+	K8S_JAVA_SMOKE_JOB_NAME="$(K8S_JAVA_SMOKE_JOB_NAME)" \
+	K8S_JAVA_SMOKE_TIMEOUT="$(K8S_JAVA_SMOKE_TIMEOUT)" \
+	K8S_SIDEWHALE_DOCKER_HOST="$(K8S_SIDEWHALE_DOCKER_HOST)" \
+	K8S_SIDEWHALE_TLS_SECRET="$(K8S_SIDEWHALE_TLS_SECRET)" \
+	./it/testcontainers-smoke/run-k8s.sh
+
+integration-test-java-smoke-k8s-clean:
+	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_JAVA_SMOKE_JOB_NAME) --ignore-not-found
+
+integration-test-mtls-k8s:
+	K8S_CONTEXT="$(K8S_CONTEXT)" \
+	K8S_NAMESPACE="$(K8S_NAMESPACE)" \
+	K8S_MTLS_JOB_NAME="$(K8S_MTLS_JOB_NAME)" \
+	K8S_MTLS_TIMEOUT="$(K8S_MTLS_TIMEOUT)" \
+	K8S_MTLS_HOLD_SECONDS="$(K8S_MTLS_HOLD_SECONDS)" \
+	K8S_MTLS_CLIENT_A_SECRET="$(K8S_MTLS_CLIENT_A_SECRET)" \
+	K8S_MTLS_CLIENT_B_SECRET="$(K8S_MTLS_CLIENT_B_SECRET)" \
+	K8S_JAVA_SMOKE_IMAGE="$(K8S_JAVA_SMOKE_IMAGE)" \
+	K8S_JAVA_SMOKE_TAG="$(K8S_JAVA_SMOKE_TAG)" \
+	./it/mtls-smoke/run-k8s.sh
+
+integration-test-mtls-k8s-clean:
+	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) delete job $(K8S_MTLS_JOB_NAME) --ignore-not-found
 
 integration-test-upstream:
 	@set -euo pipefail; \
@@ -260,7 +320,7 @@ integration-test-upstream-k8s:
 	K8S_UPSTREAM_TEST_ARGS="$(K8S_UPSTREAM_TEST_ARGS)" \
 	K8S_UPSTREAM_EXTRA_GRADLE_ARGS="$(K8S_UPSTREAM_EXTRA_GRADLE_ARGS)" \
 	./it/upstream-runner/generate-job.sh | kubectl --context $(K8S_CONTEXT) apply -f -
-	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) wait --for=condition=complete job/$(K8S_UPSTREAM_JOB_NAME) --timeout=$(K8S_UPSTREAM_JOB_TIMEOUT)
+	./it/wait-for-job.sh "$(K8S_CONTEXT)" "$(K8S_NAMESPACE)" "$(K8S_UPSTREAM_JOB_NAME)" "$(K8S_UPSTREAM_JOB_TIMEOUT)"
 	kubectl --context $(K8S_CONTEXT) -n $(K8S_NAMESPACE) logs -f job/$(K8S_UPSTREAM_JOB_NAME)
 
 integration-test-upstream-k8s-logs:

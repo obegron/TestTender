@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -39,6 +40,9 @@ func (s *containerStore) loadNetworks() error {
 		if err := json.Unmarshal(data, &n); err != nil {
 			continue
 		}
+		if !isSafeStateID(n.ID) || entry.Name() != n.ID+".json" {
+			continue
+		}
 		if n.Containers == nil {
 			n.Containers = map[string]*NetworkEndpoint{}
 		}
@@ -73,25 +77,49 @@ func (s *containerStore) ensureDefaultNetworkLocked() error {
 
 func (s *containerStore) saveNetworkLocked(n *Network) error {
 	s.ensureNetworksMapLocked()
+	if n == nil || !isSafeStateID(n.ID) {
+		return fmt.Errorf("invalid network id")
+	}
 	data, err := json.MarshalIndent(n, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.networkPath(n.ID), data, 0o644)
+	return atomicWriteFile(s.networkPath(n.ID), data, 0o600)
 }
 
 func (s *containerStore) upsertNetwork(n *Network) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
+	if err := s.saveNetworkLocked(n); err != nil {
+		return err
+	}
 	s.networks[n.ID] = n
-	return s.saveNetworkLocked(n)
+	return nil
 }
 
 func (s *containerStore) findNetwork(ref string) (*Network, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
+	return s.findNetworkLocked(ref)
+}
+
+func (s *containerStore) findNetworkForOwner(ref, owner string) (*Network, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ensureNetworksMapLocked()
+	n, ok := s.findNetworkLocked(ref)
+	if !ok || n == nil {
+		return nil, false
+	}
+	if n.ID != builtInBridgeNetworkID && !ownerMatches(n.Owner, owner) {
+		return nil, false
+	}
+	return n, true
+}
+
+func (s *containerStore) findNetworkLocked(ref string) (*Network, bool) {
 	ref = normalizeContainerName(ref)
 	if ref == "" {
 		return nil, false
@@ -99,26 +127,44 @@ func (s *containerStore) findNetwork(ref string) (*Network, bool) {
 	if n, ok := s.networks[ref]; ok {
 		return n, true
 	}
+	var nameMatch *Network
 	for _, n := range s.networks {
 		if strings.EqualFold(n.Name, ref) {
-			return n, true
+			if nameMatch != nil && nameMatch.ID != n.ID {
+				return nil, false
+			}
+			nameMatch = n
 		}
 	}
+	if nameMatch != nil {
+		return nameMatch, true
+	}
+	var prefixMatch *Network
 	for id, n := range s.networks {
 		if strings.HasPrefix(id, ref) {
-			return n, true
+			if prefixMatch != nil && prefixMatch.ID != n.ID {
+				return nil, false
+			}
+			prefixMatch = n
 		}
 	}
-	return nil, false
+	return prefixMatch, prefixMatch != nil
 }
 
 func (s *containerStore) listNetworks() []map[string]interface{} {
+	return s.listNetworksForOwner("")
+}
+
+func (s *containerStore) listNetworksForOwner(owner string) []map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
 	out := make([]map[string]interface{}, 0, len(s.networks))
 	ids := make([]string, 0, len(s.networks))
-	for id := range s.networks {
+	for id, n := range s.networks {
+		if owner != "" && id != builtInBridgeNetworkID && !ownerMatches(n.Owner, owner) {
+			continue
+		}
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
@@ -140,6 +186,24 @@ func (s *containerStore) listNetworks() []map[string]interface{} {
 	return out
 }
 
+func (s *containerStore) networkViewForOwner(n *Network, owner string) *Network {
+	if n == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	view := *n
+	view.Containers = make(map[string]*NetworkEndpoint)
+	for id, endpoint := range n.Containers {
+		c := s.containers[id]
+		if c == nil || !ownerMatches(c.Owner, owner) {
+			continue
+		}
+		view.Containers[id] = endpoint
+	}
+	return &view
+}
+
 // Backward-compat wrappers during naming migration.
 func (s *containerStore) saveNetwork(n *Network) error { return s.upsertNetwork(n) }
 
@@ -158,7 +222,10 @@ func (s *containerStore) connectContainerToNetwork(networkID string, c *Containe
 	}
 	ep := n.Containers[c.ID]
 	if ep == nil {
-		endpointID, _ := randomID(12)
+		endpointID, err := randomID(12)
+		if err != nil {
+			return err
+		}
 		ep = &NetworkEndpoint{
 			Name:     normalizeContainerName(c.Name),
 			Endpoint: endpointID,
@@ -252,6 +319,10 @@ func (s *containerStore) peerAliasesForContainer(containerID string) []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
+	owner := anonymousOwner
+	if c := s.containers[containerID]; c != nil {
+		owner = canonicalOwner(c.Owner)
+	}
 	aliases := map[string]struct{}{}
 	for _, n := range s.networks {
 		if _, attached := n.Containers[containerID]; !attached {
@@ -259,6 +330,10 @@ func (s *containerStore) peerAliasesForContainer(containerID string) []string {
 		}
 		for peerID, ep := range n.Containers {
 			if peerID == containerID || ep == nil {
+				continue
+			}
+			peer := s.containers[peerID]
+			if peer == nil || !ownerMatches(peer.Owner, owner) {
 				continue
 			}
 			for _, alias := range ep.Aliases {
@@ -283,6 +358,10 @@ func (s *containerStore) containersSharingNetworks(containerID string) []string 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
+	owner := anonymousOwner
+	if c := s.containers[containerID]; c != nil {
+		owner = canonicalOwner(c.Owner)
+	}
 	ids := map[string]struct{}{}
 	for _, n := range s.networks {
 		if _, attached := n.Containers[containerID]; !attached {
@@ -290,6 +369,10 @@ func (s *containerStore) containersSharingNetworks(containerID string) []string 
 		}
 		for peerID := range n.Containers {
 			if strings.TrimSpace(peerID) == "" {
+				continue
+			}
+			peer := s.containers[peerID]
+			if peer == nil || !ownerMatches(peer.Owner, owner) {
 				continue
 			}
 			ids[peerID] = struct{}{}
@@ -307,6 +390,10 @@ func (s *containerStore) peerHostAliasesForContainer(containerID string) map[str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ensureNetworksMapLocked()
+	owner := anonymousOwner
+	if c := s.containers[containerID]; c != nil {
+		owner = canonicalOwner(c.Owner)
+	}
 	out := map[string]string{}
 	for _, n := range s.networks {
 		if _, attached := n.Containers[containerID]; !attached {
@@ -317,7 +404,7 @@ func (s *containerStore) peerHostAliasesForContainer(containerID string) map[str
 				continue
 			}
 			peer := s.containers[peerID]
-			if peer == nil {
+			if peer == nil || !ownerMatches(peer.Owner, owner) {
 				continue
 			}
 			ip := strings.TrimSpace(peer.K8sPodIP)

@@ -11,7 +11,21 @@ import (
 
 func TestCreatePodLegacyCmdMappedToArgs(t *testing.T) {
 	var got map[string]interface{}
+	var policy map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/networkpolicies/") {
+			if r.Method != http.MethodPatch {
+				t.Fatalf("policy method = %s, want PATCH", r.Method)
+			}
+			if got := r.Header.Get("Content-Type"); got != "application/apply-patch+yaml" {
+				t.Fatalf("policy Content-Type = %q", got)
+			}
+			if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+				t.Fatalf("decode policy request: %v", err)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodPost {
 			t.Fatalf("method = %s, want POST", r.Method)
 		}
@@ -31,6 +45,7 @@ func TestCreatePodLegacyCmdMappedToArgs(t *testing.T) {
 	}
 	c := &Container{
 		ID:            "abc123",
+		Owner:         "mtls:client-a",
 		Image:         "postgres:9.6.12",
 		ResolvedImage: "postgres:9.6.12",
 		Cmd:           []string{"postgres", "-c", "fsync=off"},
@@ -38,10 +53,35 @@ func TestCreatePodLegacyCmdMappedToArgs(t *testing.T) {
 	if _, err := client.createPod(context.Background(), c, nil); err != nil {
 		t.Fatalf("createPod failed: %v", err)
 	}
+	metadata := got["metadata"].(map[string]interface{})
+	labels := metadata["labels"].(map[string]interface{})
+	if labels[k8sOwnerLabelKey] != ownerK8sID(c.Owner) {
+		t.Fatalf("pod owner label = %#v, want %q", labels[k8sOwnerLabelKey], ownerK8sID(c.Owner))
+	}
+	policySpec := policy["spec"].(map[string]interface{})
+	selector := policySpec["podSelector"].(map[string]interface{})["matchLabels"].(map[string]interface{})
+	if selector[k8sOwnerLabelKey] != ownerK8sID(c.Owner) {
+		t.Fatalf("policy owner selector = %#v, want %q", selector[k8sOwnerLabelKey], ownerK8sID(c.Owner))
+	}
 
 	spec := got["spec"].(map[string]interface{})
+	if spec["automountServiceAccountToken"] != false {
+		t.Fatalf("automountServiceAccountToken = %#v, want false", spec["automountServiceAccountToken"])
+	}
+	if spec["enableServiceLinks"] != false {
+		t.Fatalf("enableServiceLinks = %#v, want false", spec["enableServiceLinks"])
+	}
+	podSecurity := spec["securityContext"].(map[string]interface{})
+	seccomp := podSecurity["seccompProfile"].(map[string]interface{})
+	if seccomp["type"] != "RuntimeDefault" {
+		t.Fatalf("seccomp profile = %#v, want RuntimeDefault", seccomp)
+	}
 	containers := spec["containers"].([]interface{})
 	container := containers[0].(map[string]interface{})
+	containerSecurity := container["securityContext"].(map[string]interface{})
+	if containerSecurity["allowPrivilegeEscalation"] != false {
+		t.Fatalf("allowPrivilegeEscalation = %#v, want false", containerSecurity["allowPrivilegeEscalation"])
+	}
 	if _, ok := container["command"]; ok {
 		t.Fatalf("command should be unset for legacy cmd fallback payload: %#v", container["command"])
 	}
