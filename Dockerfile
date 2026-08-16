@@ -17,7 +17,7 @@ RUN CGO_ENABLED=0 go build -trimpath \
       -X github.com/obegron/testtender/internal/config.Image=${IMAGE}" \
     -o /out/testtender .
 
-FROM docker.io/library/alpine:3.23
+FROM docker.io/library/alpine:3.24
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -g 65532 testtender \
