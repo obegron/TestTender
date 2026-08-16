@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/viper"
 	"k8s.io/klog"
 
+	"github.com/obegron/testtender/internal/auth"
 	"github.com/obegron/testtender/internal/backend"
 	imagepolicy "github.com/obegron/testtender/internal/policy/image"
 	secretpolicy "github.com/obegron/testtender/internal/policy/secret"
@@ -56,8 +57,39 @@ func (s *Server) Run(ctx context.Context) error {
 	if len(allowedSecrets) > 0 {
 		klog.Infof("Secret environment references enabled for %d exact Secret names", len(allowedSecrets))
 	}
+	allowedSubjectsRaw := strings.ReplaceAll(viper.GetString("oidc.allowed-subjects"), " ", "")
+	allowedSubjects := []string{}
+	if allowedSubjectsRaw != "" {
+		allowedSubjects = strings.Split(allowedSubjectsRaw, ",")
+	}
+	allowedNamespacesRaw := strings.ReplaceAll(viper.GetString("oidc.allowed-namespaces"), " ", "")
+	allowedNamespaces := []string{}
+	if allowedNamespacesRaw != "" {
+		allowedNamespaces = strings.Split(allowedNamespacesRaw, ",")
+	}
+	verifier, err := auth.New(ctx, auth.Config{
+		Required:          viper.GetBool("oidc.required"),
+		Issuer:            viper.GetString("oidc.issuer"),
+		DiscoveryURL:      viper.GetString("oidc.discovery-url"),
+		Audience:          viper.GetString("oidc.audience"),
+		AllowedSubjects:   allowedSubjects,
+		AllowedNamespaces: allowedNamespaces,
+		CAFile:            viper.GetString("oidc.ca-file"),
+		HTTPTimeout:       viper.GetDuration("oidc.http-timeout"),
+		RefreshInterval:   viper.GetDuration("oidc.jwks-refresh-interval"),
+		ClockSkew:         viper.GetDuration("oidc.clock-skew"),
+	})
+	if err != nil {
+		return fmt.Errorf("initialize OIDC authentication: %w", err)
+	}
+	if verifier == nil {
+		klog.Warning("OIDC authentication disabled; any client with network access can call the API")
+	} else {
+		klog.Infof("OIDC authentication enabled for issuer %s, audience %s, %d exact subjects and %d exact namespaces",
+			viper.GetString("oidc.issuer"), viper.GetString("oidc.audience"), len(allowedSubjects), len(allowedNamespaces))
+	}
 
-	router := s.getGinEngine(resolver, secretPolicy)
+	router := s.getGinEngine(resolver, secretPolicy, verifier)
 	router.SetTrustedProxies(nil)
 
 	socket := viper.GetString("server.socket")
@@ -104,13 +136,16 @@ func (s *Server) Run(ctx context.Context) error {
 
 // getGinEngine will return a gin.Engine router and configure the
 // appropriate middleware.
-func (s *Server) getGinEngine(imageResolver imagepolicy.Resolver, secretPolicy *secretpolicy.Policy) *gin.Engine {
+func (s *Server) getGinEngine(imageResolver imagepolicy.Resolver, secretPolicy *secretpolicy.Policy, verifier *auth.Verifier) *gin.Engine {
 	router := gin.New()
 	router.Use(httputil.VersionAliasMiddleware(router))
 	router.Use(gin.Logger())
 	router.Use(httputil.RequestLoggerMiddleware())
 	router.Use(httputil.ResponseLoggerMiddleware())
 	router.Use(gin.Recovery())
+	if verifier != nil {
+		router.Use(auth.Middleware(verifier))
+	}
 
 	insp := viper.GetBool("registry.inspector")
 	if insp {

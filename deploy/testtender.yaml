@@ -101,6 +101,7 @@ spec:
           imagePullPolicy: IfNotPresent
           args:
             - server
+            - --oidc-required
             - --pre-archive
             - --reverse-proxy
             - --namespace=$(POD_NAMESPACE)
@@ -112,6 +113,33 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: OIDC_ISSUER
+              valueFrom:
+                configMapKeyRef:
+                  name: testtender-oidc
+                  key: issuer
+            - name: OIDC_DISCOVERY_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: testtender-oidc
+                  key: discovery-url
+            - name: OIDC_AUDIENCE
+              valueFrom:
+                configMapKeyRef:
+                  name: testtender-oidc
+                  key: audience
+            - name: OIDC_ALLOWED_SUBJECTS
+              valueFrom:
+                configMapKeyRef:
+                  name: testtender-oidc
+                  key: allowed-subjects
+                  optional: true
+            - name: OIDC_ALLOWED_NAMESPACES
+              valueFrom:
+                configMapKeyRef:
+                  name: testtender-oidc
+                  key: allowed-namespaces
+                  optional: true
           ports:
             - name: docker-api
               containerPort: 2475

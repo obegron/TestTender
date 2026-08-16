@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: testtender-oidc
+data:
+  # The issuer must exactly match the token's iss claim. The discovery URL may
+  # point to an internal helper that publishes this issuer's discovery/JWKS.
+  issuer: https://kubernetes-issuer.example
+  discovery-url: https://oidc-helper.example
+  audience: testtender
+  # Authorize every service account in this exact CI/CD namespace. Use
+  # allowed-subjects instead when only selected service accounts should call.
+  allowed-namespaces: tenant-dev01

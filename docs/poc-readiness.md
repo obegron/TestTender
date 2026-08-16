@@ -1,6 +1,6 @@
 # Trusted-Team POC Readiness
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 TestTender is ready for a deliberately narrow proof of concept, not for a
 shared or production service. The acceptable POC topology is one TestTender
@@ -11,6 +11,8 @@ Service remains cluster-local.
 ## Required boundaries
 
 - one trusted tenant team and one controlled pipeline identity
+- OIDC required with the exact central CI/CD issuer, dedicated audience and
+  matching CI/CD namespace configured in the private deployment overlay
 - no mutually untrusted or overlapping runs until ownership enforcement exists
 - a deny-by-default image policy that rewrites to the internal registry
 - a pinned internally scanned TestTender image, not `latest`
@@ -19,9 +21,13 @@ Service remains cluster-local.
 - the supplied worker service account with token automount disabled
 - TestTender's control Role must retain no Secret permissions
 - cleanup after every pipeline and a short `--reapmax` safety window
-- no ingress for the Docker API; clients use `tcp://testtender:2475` in-cluster
+- expose the Docker API only through the tenant cluster's authenticated HTTPS
+  ingress when the CI/CD token must cross a cluster boundary
 - runner Jobs carry `testtender.io/client=true`; Tekton PipelineRun Pods are
-  admitted by the supplied NetworkPolicy
+  admitted by the supplied NetworkPolicy when they run in the same namespace
+- when Traefik forwards the request, patch the NetworkPolicy to allow only the
+  actual Traefik namespace and Pod labels; Calico sees Traefik, not the remote
+  CI/CD Pod labels
 
 The current local k3d cluster accepted the NetworkPolicy resource but did not
 block an unlabeled probe. This is evidence that manifest installation alone is
@@ -32,6 +38,14 @@ before the policy is treated as a boundary.
 
 - [ ] Install TestTender through the tenant's normal Argo CD path.
 - [ ] Pin the TestTender image by digest.
+- [ ] Configure `testtender-oidc` with the central CI/CD issuer, discovery URL,
+      audience and exact allowed CI/CD namespace.
+- [ ] If using Traefik, patch `testtender-api` with its actual namespace/Pod
+      selectors and configure the private hostname and certificate in Argo CD.
+- [ ] Verify missing, expired, wrong-audience and wrong-namespace tokens all
+      receive HTTP 401 without creating a worker Pod.
+- [ ] Verify the real pipeline token reaches `/_ping` and creates a permitted
+      worker Pod through the loopback client proxy.
 - [ ] Configure and verify internal image rewrites with public egress disabled.
 - [ ] Configure only the namespace-local Secret names required by the tests.
 - [ ] Confirm the control service account cannot read Secrets.
@@ -53,14 +67,16 @@ K8S_NETWORK_PROBE_IMAGE=registry.internal/tools/curl:approved \
 ./it/network-policy-smoke/run.sh
 ```
 
-The check is successful only when the labeled Pod reaches `/_ping` and the
+The check is successful only when the labeled Pod receives an HTTP response
+from `/_ping` (HTTP 401 is sufficient for this network-only check) and the
 otherwise identical unlabeled Pod cannot connect. It deletes only the two
 temporary probe Pods that it creates.
 
 ## Explicitly deferred
 
-OIDC caller authentication, per-run ownership, concurrent-run alias isolation,
-application-enforced resource ceilings and restart reconciliation are not
-complete. Until they are, this POC must not expose one
-TestTender instance to mutually untrusted callers or treat it as a durable
-shared service.
+Per-run ownership, concurrent-run alias isolation, application-enforced
+resource ceilings and restart reconciliation are not complete. The loopback
+client proxy has unit coverage but still requires acceptance with a real
+projected central-CI token. Until ownership is enforced, this POC must not
+expose one TestTender instance to mutually untrusted or overlapping callers or
+treat it as a durable shared service.

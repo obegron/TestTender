@@ -1,6 +1,6 @@
 # TestTender Compatibility Matrix
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 > This remains the canonical compatibility matrix for the Kubedock-derived
 > implementation. The first fork baseline is recorded in
@@ -31,7 +31,7 @@ Status definitions:
 | Archive HEAD/GET/PUT | Partial | Pre-start copy is 4/4 and file operations are 7/8, including live upload/download, directories and a 1 GiB upload. Copy from an exited container and bounded download buffering remain open. |
 | Exec | Partial | All four pinned non-interactive upstream cases pass: ordinary command, user, workdir, and environment. User switching requires a supported in-image helper and fails closed when unavailable; stdin/TTY/hijack parity is not implemented. |
 | Networks API | Confirmed | All five pinned network cases pass. Requested driver/options are compatibility metadata only; Kubernetes CNI selection remains cluster-managed. Concurrent-run alias collision/isolation is a separate acceptance target. |
-| TLS and client authentication | Unverified | Strict mTLS evidence belongs to the old prototype; authentication has not yet been reintroduced and rerun against the fork. |
+| OIDC caller authentication | Partial | Strict issuer, discovery URL, audience, expiry, algorithm, signature and exact Kubernetes service-account subject/namespace checks have unit coverage. A loopback-only HTTPS client proxy injects rotating projected tokens for unmodified clients. Live central-CI issuer/JWKS evidence remains. |
 | Per-client resource ownership | Unverified | Required by the fork plan but not yet implemented in the imported baseline. |
 | Namespace-local Secret references | Confirmed | Exact allowlisted Secret names become kubelet-resolved `secretKeyRef` environment variables or read-only files below `/run/secrets`; TestTender has no Secret RBAC and never reads values. |
 | Docker API NetworkPolicy | Unverified | A same-namespace client policy is supplied, but the current local k3d CNI accepted it without enforcing the unlabeled-client deny case. Target-CNI negative evidence is required. |
@@ -67,6 +67,8 @@ Status definitions:
    RabbitMQ, and MockServer on pinned Kubernetes runs.
 4. Add a CNI-capable cross-owner deny test before treating one instance as a
    multi-tenant boundary.
+5. Verify central-CI OIDC discovery, key rotation and authenticated Docker API
+   requests through the client proxy using a real projected pipeline token.
 
 ## PRoot Fallback
 

@@ -16,9 +16,10 @@ See [UPSTREAM.md](UPSTREAM.md) for provenance and update guidance.
 
 The Kubedock-derived baseline is now the active implementation. It retains
 upstream Docker and libpod compatibility while TestTender adds restricted-
-environment controls. The first implemented control is exact image
-authorization and mirror rewriting. OIDC run authentication, per-run ownership
-and constrained tenant Secret references remain under development.
+environment controls. Exact image authorization and mirror rewriting,
+namespace-local Secret references, strict OIDC caller authentication, and a
+loopback-only token-injecting client proxy are implemented. Per-run ownership
+remains under development.
 
 This is not production ready. The current scope and release gates are tracked
 in the [fork plan](docs/kubedock-fork-plan.md) and
@@ -63,6 +64,29 @@ Kustomize base; use the commit-SHA image tag produced by CI for a POC rather
 than `latest`. Before relying on that restriction, run
 `it/network-policy-smoke/run.sh` against the target cluster as described in
 `docs/poc-readiness.md`.
+
+## Caller authentication
+
+The supplied deployment fails closed until OIDC is configured. TestTender
+validates one exact issuer, a dedicated audience, token lifetime, signature and
+an exact allowlist of Kubernetes service-account subjects or CI/CD namespaces.
+For the namespace shortcut, both the signed Kubernetes namespace claim and the
+`system:serviceaccount:<namespace>:<name>` subject must agree. It grants no
+administrator role.
+
+The discovery base URL is configured separately from the issuer, allowing an
+internal helper to expose a Kubernetes cluster's discovery and JWKS endpoints.
+See `deploy/oidc-config.example.yaml` and [config.md](config.md); keep actual
+issuer URLs and CI/CD namespace names in the private Argo CD configuration.
+
+Because Docker clients do not share one portable custom-header mechanism,
+`testtender client-proxy` can run beside an unmodified Testcontainers process.
+It rereads a projected token for every request, injects the Bearer header and
+forwards only to an HTTPS TestTender endpoint. Point `DOCKER_HOST` at its
+loopback listener; see [config.md](config.md) for the command. When Traefik is
+the upstream, the private Argo CD overlay must patch the NetworkPolicy with the
+real ingress-controller namespace and Pod labels; the example patch is
+`deploy/traefik-network-policy-patch.example.yaml`.
 
 ## Image policy
 

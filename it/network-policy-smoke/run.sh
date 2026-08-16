@@ -51,8 +51,13 @@ kubectl "${kubectl_args[@]}" wait \
 
 sleep "${settle_seconds}"
 
-kubectl "${kubectl_args[@]}" exec "${allowed_pod}" -- \
-  curl --fail --silent --show-error --max-time 5 "${endpoint}" >/dev/null
+allowed_status="$(kubectl "${kubectl_args[@]}" exec "${allowed_pod}" -- \
+  curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+  --max-time 5 "${endpoint}")"
+if [[ "${allowed_status}" == "000" ]]; then
+  echo "FAIL: labeled Pod did not receive an HTTP response from TestTender" >&2
+  exit 1
+fi
 
 if kubectl "${kubectl_args[@]}" exec "${denied_pod}" -- \
   curl --fail --silent --show-error --max-time 5 "${endpoint}" >/dev/null 2>&1; then
@@ -60,4 +65,4 @@ if kubectl "${kubectl_args[@]}" exec "${denied_pod}" -- \
   exit 1
 fi
 
-echo "PASS: labeled Pod reached TestTender and unlabeled Pod was denied"
+echo "PASS: labeled Pod reached TestTender (HTTP ${allowed_status}) and unlabeled Pod was denied"

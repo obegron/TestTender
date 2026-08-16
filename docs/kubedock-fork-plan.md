@@ -1,6 +1,6 @@
 # Kubedock Fork Plan
 
-Last updated: 2026-08-16
+Last updated: 2026-08-17
 
 ## Decision
 
@@ -39,14 +39,19 @@ deny-by-default image rewriting, namespace-scoped worker RBAC, allowlisted
 Secret env/file references resolved only by the kubelet, a Docker API
 NetworkPolicy manifest, commit-SHA container tags, and retained PostgreSQL,
 Redis, Oracle and multi-container network evidence. NetworkPolicy enforcement
-is a target-CNI acceptance gate, not a portable property of the manifest.
+is a target-CNI acceptance gate, not a portable property of the manifest. OIDC
+now validates the central CI/CD Kubernetes issuer, a dedicated audience and
+exact allowed CI/CD service-account namespaces without administrator roles. A
+loopback-only client proxy supplies Bearer tokens to unmodified Testcontainers
+clients; live pipeline transport remains an acceptance gate.
 
 This is not approval for a shared service. Before the work POC starts, complete
 the site-specific items in [`poc-readiness.md`](poc-readiness.md): pin an image,
 configure internal mirrors and exact Secret names, apply namespace quotas, and
 run representative success/failure/cancellation cleanup through the real
-pipeline. OIDC ownership and concurrent-run isolation remain the next code
-gate before mutually untrusted or overlapping pipelines use one instance.
+pipeline. Live bearer-token transport acceptance, ownership and concurrent-run
+isolation remain the next gate before mutually untrusted or overlapping
+pipelines use one instance.
 
 ## Product Boundary
 
@@ -96,6 +101,8 @@ namespaces, issuers, hostnames or secret backends.
 ## Authentication and Ownership
 
 - Validate short-lived OIDC tokens with explicit issuer and audience checks.
+- Authorize exact central CI/CD service-account namespaces or exact subjects;
+  never infer an administrator role from a token.
 - Bind run submission to an allowed tenant, namespace and CI service identity.
 - Give each runner Job a projected service-account token with a TestTender-only
   audience for Docker API access inside the tenant cluster.

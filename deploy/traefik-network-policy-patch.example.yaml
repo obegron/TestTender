@@ -1,0 +1,21 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: testtender-api
+spec:
+  # Replace these example selectors with the labels used by the tenant
+  # cluster's ingress-controller namespace and Traefik Pods.
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: traefik
+        - podSelector:
+            matchLabels:
+              testtender.io/client: "true"
+      ports:
+        - protocol: TCP
+          port: 2475
